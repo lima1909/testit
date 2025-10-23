@@ -1,0 +1,28 @@
+---
+name: run ci for testit
+on: [push, pull_request]
+
+jobs:
+  build:
+    name: testit unit tests
+    strategy:
+      matrix:
+        platform: [ubuntu-latest, macos-latest]
+        zig_version: [ "0.15.2" ]
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: git checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref }}
+      - name: zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ matrix.zig_version }} 
+      - name: check zig version
+        run: zig version
+      - name: run all unit tests
+        run: zig test src/tests.zig
+      - name: run test_runner main tests
+        run: zig build test -- --slowest
