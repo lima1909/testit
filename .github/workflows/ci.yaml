@@ -7,7 +7,7 @@ jobs:
     name: testit unit tests
     strategy:
       matrix:
-        platform: [ubuntu-latest, macos-latest]
+        platform: [ubuntu-latest, macos-latest, windows-latest]
         zig_version: [ "0.15.2" ]
 
     runs-on: ${{ matrix.platform }}
@@ -24,5 +24,11 @@ jobs:
         run: zig version
       - name: run all unit tests
         run: zig test src/tests.zig
-      - name: run test_runner main tests
-        run: zig build test -- --slowest
+      - name: run test_runner slowest
+        run: zig build test -- --slowest 2
+      - name: run test_runner filter
+        run: zig build test -- --filter pass
+      - name: run test_runner shuffle
+        run: zig build test -- --shuffle
+      - name: run test_runner shuffle, filter and slowest
+        run: zig build test -- --shuffle --filter pass --slowest 1 --stderr

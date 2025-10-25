@@ -4,7 +4,8 @@ const builtin = @import("builtin");
 const tr = @import("test_runner.zig");
 const Runner = tr.Runner;
 const Output = tr.Output;
-const TestRunner = tr.TestRunner;
+const Config = tr.Config;
+const runTests = tr.runTests;
 
 //
 // Output for testing purpose
@@ -29,7 +30,7 @@ const TestingOutput = struct {
         e.msg = self.alloc.dupe(u8, e.msg) catch |err| @panic(@errorName(err));
         self.errors.append(self.alloc, e.*) catch |err| @panic(@errorName(err));
     }
-    fn onResultPass(_: *Output, _: usize) anyerror!void {}
+    fn onResultPass(_: *Output, _: usize, _: *const Runner.Result) anyerror!void {}
     fn onResultSkip(_: *Output, _: usize) anyerror!void {}
     fn onResultLeak(_: *Output, _: usize, _: ?std.builtin.StackTrace) anyerror!void {}
     fn onEnd(_: *Output) anyerror!void {}
@@ -115,7 +116,7 @@ test "runner one test" {
     var out = TestingOutput.init(std.testing.allocator);
     defer out.deinit();
 
-    TestRunner.runTests(&tests, &base.runner, &out.output);
+    runTests(&tests, &base.runner, &out.output);
 
     try std.testing.expectEqual(1, out.output.pass);
     try std.testing.expectEqual("test 0", out.output.tests[0].name);
@@ -182,9 +183,12 @@ test "run all tests with filter" {
     var out = TestingOutput.init(std.testing.allocator);
     defer out.deinit();
 
-    var cfg: TestRunner.Config = .init();
+    var cfg: Config = .init();
     cfg.filter_string = "test";
-    TestRunner.run(&cfg, &tests, runner, &out.output);
+    try cfg.configureFilterAndShuffle(std.testing.allocator, &tests);
+    defer cfg.deinit(std.testing.allocator);
+
+    runTests(cfg.mtests.?.items, runner, &out.output);
 
     try std.testing.expectEqual(4, out.output.tests.len);
     try std.testing.expectEqualStrings("test error 0", out.output.tests[0].name);
