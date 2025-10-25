@@ -15,6 +15,8 @@ pub fn main() !void {
 
     // configure with command line args
     var args = try std.process.argsWithAllocator(alloc);
+    defer args.deinit();
+
     var cfg = try Config.initFromArgs(&args);
     defer cfg.deinit(alloc);
 
