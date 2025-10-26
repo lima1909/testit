@@ -7,6 +7,84 @@ const Output = tr.Output;
 const Config = tr.Config;
 const runTests = tr.runTests;
 
+test "config from args" {
+    {
+        var args = std.mem.tokenizeScalar(u8, "test --filter pass", ' ');
+        const cfg = try Config.initFromArgs(&args);
+        try std.testing.expectEqualStrings("pass", cfg.filter_string.?);
+    }
+
+    {
+        var args = std.mem.tokenizeScalar(u8, "test --slowest 2", ' ');
+        const cfg = try Config.initFromArgs(&args);
+        try std.testing.expectEqual(2, cfg.slowest);
+    }
+
+    {
+        var args = std.mem.tokenizeScalar(u8, "test --shuffle", ' ');
+        const cfg = try Config.initFromArgs(&args);
+        try std.testing.expectEqual(true, cfg.with_shuffle);
+    }
+
+    {
+        var args = std.mem.tokenizeScalar(u8, "test --shuffle-seed 42", ' ');
+        const cfg = try Config.initFromArgs(&args);
+        try std.testing.expectEqual(42, cfg.shuffle_seed);
+    }
+
+    {
+        var args = std.mem.tokenizeScalar(u8, "test --filter pass    --shuffle  --slowest 2", ' ');
+        const cfg = try Config.initFromArgs(&args);
+        try std.testing.expectEqualStrings("pass", cfg.filter_string.?);
+        try std.testing.expectEqual(true, cfg.with_shuffle);
+        try std.testing.expectEqual(2, cfg.slowest);
+    }
+}
+
+test "config from args with errors" {
+    {
+        var args = std.mem.tokenizeScalar(u8, "test --filter", ' ');
+        const err = Config.initFromArgs(&args);
+        try std.testing.expectEqual(error.MissingFilterString, err);
+    }
+
+    {
+        var args = std.mem.tokenizeScalar(u8, "test --slowest -a-number", ' ');
+        const err = Config.initFromArgs(&args);
+        try std.testing.expectEqual(error.InvalidSlowestValue, err);
+    }
+
+    {
+        var args = std.mem.tokenizeScalar(u8, "test --shuffle-seed", ' ');
+        const err = Config.initFromArgs(&args);
+        try std.testing.expectEqual(error.MissingShuffleSeed, err);
+    }
+
+    {
+        var args = std.mem.tokenizeScalar(u8, "test --shuffle-seed not-a-number", ' ');
+        const err = Config.initFromArgs(&args);
+        try std.testing.expectEqual(error.InvalidShuffleSeed, err);
+    }
+
+    {
+        var args = std.mem.tokenizeScalar(u8, "test --foo", ' ');
+        const err = Config.initFromArgs(&args);
+        try std.testing.expectEqual(error.UnkownOption, err);
+    }
+
+    {
+        var args = std.mem.tokenizeScalar(u8, "test   --slowest --shuffle", ' ');
+        const err = Config.initFromArgs(&args);
+        try std.testing.expectEqual(error.InvalidSlowestValue, err);
+    }
+
+    {
+        var args = std.mem.tokenizeScalar(u8, "test   --shuffle-seed --shuffle", ' ');
+        const err = Config.initFromArgs(&args);
+        try std.testing.expectEqual(error.InvalidShuffleSeed, err);
+    }
+}
+
 //
 // Output for testing purpose
 // counts the result-states and the result-errors

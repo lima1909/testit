@@ -134,6 +134,7 @@ pub const Config = struct {
             } else {
                 // TODO: print help
                 std.debug.print("unkown option: {s}\n", .{arg});
+                return error.UnkownOption;
             }
         }
 
