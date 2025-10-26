@@ -90,27 +90,28 @@ test "config from args with errors" {
 // counts the result-states and the result-errors
 const TestingOutput = struct {
     output: Output = .{
-        .vtable = .{
-            .onResultPassFn = @This().onResultPass,
-            .onResultSkipFn = @This().onResultSkip,
-            .onResultFailFn = @This().onResultFail,
-            .onResultLeakFn = @This().onResultLeak,
-            .onEndFn = @This().onEnd,
-        },
+        .onResultFn = @This().onResult,
+        .onEndFn = @This().onEnd,
     },
 
     errors: std.ArrayListAligned(Runner.Result.Error, null) = .empty,
     alloc: std.mem.Allocator,
 
-    fn onResultFail(out: *Output, _: usize, e: *Runner.Result.Error) anyerror!void {
+    fn onResult(out: *Output, _: usize, r: *Runner.Result) anyerror!void {
         var self: *@This() = @fieldParentPtr("output", out);
 
-        e.msg = self.alloc.dupe(u8, e.msg) catch |err| @panic(@errorName(err));
-        self.errors.append(self.alloc, e.*) catch |err| @panic(@errorName(err));
+        switch (r.state) {
+            .pass => out.pass += 1,
+            .skip => out.skip += 1,
+            .leak => out.leak += 1,
+            .fail => |*e| {
+                out.fail += 1;
+                e.msg = self.alloc.dupe(u8, e.msg) catch |err| @panic(@errorName(err));
+                self.errors.append(self.alloc, e.*) catch |err| @panic(@errorName(err));
+            },
+        }
     }
-    fn onResultPass(_: *Output, _: usize, _: *const Runner.Result) anyerror!void {}
-    fn onResultSkip(_: *Output, _: usize) anyerror!void {}
-    fn onResultLeak(_: *Output, _: usize, _: ?std.builtin.StackTrace) anyerror!void {}
+
     fn onEnd(_: *Output) anyerror!void {}
 
     pub fn init(alloc: std.mem.Allocator) @This() {

@@ -30,18 +30,18 @@ pub fn main() !void {
     const runner = &with_leak_detection.runner;
 
     // Output
-    var slowest = try Output.Slowest.init(alloc, cfg.slowest);
-    defer slowest.deinit();
+    var console = Output.Console.init(
+        cfg.file,
+        if (cfg.slowest > 0) try Output.Slowest.init(alloc, cfg.slowest) else null,
+    );
+    defer console.deinit();
 
-    var buffer: [1024]u8 = undefined;
-    var file = cfg.file.writer(&buffer);
-    var writer = Output.Writer{
-        .writer = &file.interface,
-        .file = cfg.file,
-        .slowest = slowest,
-    };
-
-    runTests(tests, runner, &writer.output);
+    // run all tests
+    runTests(
+        tests,
+        runner,
+        &console.output,
+    );
 }
 
 //
@@ -359,118 +359,100 @@ pub const Output = struct {
     leak: usize = 0,
     fail: usize = 0,
 
-    vtable: struct {
-        onResultPassFn: *const fn (*Output, usize, *Runner.Result) anyerror!void,
-        onResultSkipFn: *const fn (*Output, usize) anyerror!void,
-        onResultFailFn: *const fn (*Output, usize, *Runner.Result.Error) anyerror!void,
-        onResultLeakFn: *const fn (*Output, usize, ?std.builtin.StackTrace) anyerror!void,
-        onEndFn: *const fn (*Output) anyerror!void,
-    },
+    onResultFn: *const fn (*Output, usize, *Runner.Result) anyerror!void,
+    onEndFn: *const fn (*Output) anyerror!void,
 
     pub fn onResult(self: *Output, idx: usize, r: *Runner.Result) anyerror!void {
-        switch (r.state) {
-            .pass => {
-                self.pass += 1;
-                try self.vtable.onResultPassFn(self, idx, r);
-            },
-            .skip => {
-                self.skip += 1;
-                try self.vtable.onResultSkipFn(self, idx);
-            },
-            .fail => |*e| {
-                self.fail += 1;
-                try self.vtable.onResultFailFn(self, idx, e);
-            },
-            .leak => |l| {
-                self.leak += 1;
-                try self.vtable.onResultLeakFn(self, idx, l);
-            },
-        }
+        return self.onResultFn(self, idx, r);
     }
 
     pub fn onEnd(self: *Output) anyerror!void {
-        return self.vtable.onEndFn(self);
-    }
-
-    pub fn nameByIdx(self: *Output, idx: usize) []const u8 {
-        return self.tests[idx].name;
+        return self.onEndFn(self);
     }
 
     //
-    // Output for printing purpose
+    // Output, default is printing to the console (stdout or stderr)
     //
-    const Writer = struct {
+    pub const Console = struct {
+        var buffer: [1024]u8 = undefined;
+
+        writer: std.fs.File.Writer,
+        slowest: ?Slowest = null,
+        tty_config: std.Io.tty.Config,
+
         output: Output = .{
-            .vtable = .{
-                .onResultPassFn = @This().onResultPass,
-                .onResultSkipFn = @This().onResultSkip,
-                .onResultFailFn = @This().onResultFail,
-                .onResultLeakFn = @This().onResultLeak,
-                .onEndFn = @This().onEnd,
-            },
+            .onResultFn = @This().onResult,
+            .onEndFn = @This().onEnd,
         },
-        writer: *std.Io.Writer,
-        file: std.fs.File,
-        slowest: Slowest,
 
-        fn onResultPass(out: *Output, idx: usize, r: *Runner.Result) anyerror!void {
+        pub fn init(file: std.fs.File, slowest: ?Slowest) @This() {
+            return .{
+                .writer = file.writer(&buffer),
+                .slowest = slowest,
+                .tty_config = std.Io.tty.detectConfig(file),
+            };
+        }
+
+        pub fn deinit(self: *@This()) void {
+            if (self.slowest) |*slow| slow.deinit();
+        }
+
+        pub fn onResult(out: *Output, idx: usize, r: *Runner.Result) anyerror!void {
             var self: *@This() = @fieldParentPtr("output", out);
 
-            if (self.slowest.isActive()) {
-                self.slowest.put(idx, r.duration_ns);
+            if (self.slowest) |*slow| {
+                slow.put(idx, r.duration_ns);
+            }
+
+            switch (r.state) {
+                .pass => out.pass += 1,
+                .leak => |_| out.leak += 1,
+                .skip => {
+                    out.skip += 1;
+                    var writer = &self.writer.interface;
+                    try writer.print("{d}/{d} {s}...SKIP\n", .{
+                        idx + 1, out.tests_len, out.tests[idx].name,
+                    });
+                    try writer.flush();
+                },
+                .fail => |*e| {
+                    out.fail += 1;
+                    var writer = &self.writer.interface;
+                    try writer.print("{d}/{d} {s}...FAIL ({t})\n", .{
+                        idx + 1, out.tests_len, out.tests[idx].name, e.err,
+                    });
+                    if (e.error_stack_trace) |trace| {
+                        try std.debug.writeStackTrace(trace, writer, try std.debug.getSelfDebugInfo(), self.tty_config);
+                    }
+                    try writer.flush();
+                },
             }
         }
-
-        fn onResultSkip(out: *Output, idx: usize) anyerror!void {
-            var self: *@This() = @fieldParentPtr("output", out);
-
-            try self.writer.print("{d}/{d} {s}...SKIP\n", .{
-                idx + 1, out.tests_len, out.nameByIdx(idx),
-            });
-            try self.writer.flush();
-        }
-
-        fn onResultFail(out: *Output, idx: usize, e: *Runner.Result.Error) anyerror!void {
-            var self: *@This() = @fieldParentPtr("output", out);
-
-            try self.writer.print("{d}/{d} {s}...FAIL ({t})\n", .{
-                idx + 1, out.tests_len, out.nameByIdx(idx), e.err,
-            });
-            if (e.error_stack_trace) |trace| {
-                try std.debug.writeStackTrace(
-                    trace,
-                    self.writer,
-                    try std.debug.getSelfDebugInfo(),
-                    std.io.tty.detectConfig(self.file),
-                );
-            }
-            try self.writer.flush();
-        }
-
-        fn onResultLeak(_: *Output, _: usize, _: ?std.builtin.StackTrace) anyerror!void {}
 
         pub fn onEnd(out: *Output) anyerror!void {
-            const self: *@This() = @fieldParentPtr("output", out);
+            var self: *@This() = @fieldParentPtr("output", out);
 
-            if (self.slowest.isActive()) {
-                while (self.slowest.queue.removeMaxOrNull()) |s| {
-                    try self.writer.print("{d}/{d} {s}...SLOWEST ({d}ns)\n", .{
-                        s.idx + 1, out.tests_len, out.nameByIdx(s.idx), s.duration_ns,
+            var writer = &self.writer.interface;
+
+            if (self.slowest) |*slow| {
+                while (slow.queue.removeMaxOrNull()) |s| {
+                    try writer.print("{d}/{d} {s}...SLOWEST ({d}ns)\n", .{
+                        s.idx + 1, out.tests_len, out.tests[s.idx].name, s.duration_ns,
                     });
                 }
             }
 
             if (out.pass == out.tests_len) {
-                try self.writer.print("All {d} tests passed.\n", .{out.pass});
+                try writer.print("All {d} tests passed.\n", .{out.pass});
             } else {
-                try self.writer.print("{d} passed; {d} skipped; {d} failed.\n", .{ out.pass, out.skip, out.fail });
+                try writer.print("{d} passed; {d} skipped; {d} failed.\n", .{ out.pass, out.skip, out.fail });
             }
 
             if (out.leak != 0) {
-                try self.writer.print("{d} tests leaked memory.\n", .{out.leak});
+                try writer.print("{d} tests leaked memory.\n", .{out.leak});
             }
 
-            try self.writer.flush();
+            try writer.flush();
         }
     };
 
@@ -503,15 +485,7 @@ pub const Output = struct {
             self.queue.deinit();
         }
 
-        pub fn isActive(self: *const @This()) bool {
-            return self.max > 0;
-        }
-
         pub fn put(self: *@This(), idx: usize, duration_ns: u64) void {
-            if (self.max == 0) {
-                return;
-            }
-
             if (self.queue.count() < self.max) {
                 self.queue.add(.{ .idx = idx, .duration_ns = duration_ns }) catch {
                     @panic("ERROR by add to slowest Queue");
@@ -519,11 +493,13 @@ pub const Output = struct {
                 return;
             }
 
-            if (self.queue.peekMin().?.duration_ns < duration_ns) {
-                _ = self.queue.removeMin();
-                self.queue.add(.{ .idx = idx, .duration_ns = duration_ns }) catch {
-                    @panic("ERROR by add to slowest Queue");
-                };
+            if (self.queue.peekMin()) |min| {
+                if (min.duration_ns < duration_ns) {
+                    _ = self.queue.removeMin();
+                    self.queue.add(.{ .idx = idx, .duration_ns = duration_ns }) catch {
+                        @panic("ERROR by add to slowest Queue");
+                    };
+                }
             }
         }
     };
