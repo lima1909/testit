@@ -27,21 +27,18 @@ pub fn main() !void {
     // Runner
     var base = try Runner.Base.init();
     var with_leak_detection = Runner.WithLeakDetection.init(&base.runner);
-    const runner = &with_leak_detection.runner;
+    var slowest: ?Runner.Slowest = if (cfg.slowest > 0)
+        try Runner.Slowest.init(alloc, cfg.slowest, &with_leak_detection.runner)
+    else
+        null;
+    const runner = if (slowest) |*s| &s.runner else &with_leak_detection.runner;
+    defer if (slowest) |*s| s.deinit();
 
     // Output
-    var console = Output.Console.init(
-        cfg.file,
-        if (cfg.slowest > 0) try Output.Slowest.init(alloc, cfg.slowest) else null,
-    );
-    defer console.deinit();
+    var console = Output.Console.init(cfg.file, if (slowest) |*s| &s.slowest else null);
 
     // run all tests
-    runTests(
-        tests,
-        runner,
-        &console.output,
-    );
+    runTests(tests, runner, &console.output);
 }
 
 //
@@ -52,7 +49,7 @@ pub fn runTests(tests: []const std.builtin.TestFn, runner: *Runner, out: *Output
     out.tests_len = tests.len;
 
     for (tests, 0..) |t, idx| {
-        var result = runner.runTest(t.func);
+        var result = runner.runTestAt(idx, t.func);
         out.onResult(idx, &result) catch |err| @panic(@errorName(err));
     }
 
@@ -214,24 +211,28 @@ pub const Runner = struct {
     const TestFn = *const fn () anyerror!void;
 
     // Runner interface method
-    runTestFn: *const fn (*Runner, TestFn) Result,
+    runTestAtFn: *const fn (*Runner, usize, TestFn) Result,
 
     pub fn runTest(self: *Runner, testFn: TestFn) Result {
-        return self.runTestFn(self, testFn);
+        return self.runTestAtFn(self, 0, testFn);
+    }
+
+    pub fn runTestAt(self: *Runner, idx: usize, testFn: TestFn) Result {
+        return self.runTestAtFn(self, idx, testFn);
     }
 
     //
     // Base runner
     //
     pub const Base = struct {
-        runner: Runner = .{ .runTestFn = runBaseTest },
+        runner: Runner = .{ .runTestAtFn = runBaseTestAt },
         timer: std.time.Timer,
 
         pub fn init() !@This() {
             return .{ .timer = try std.time.Timer.start() };
         }
 
-        pub fn runBaseTest(r: *Runner, testFn: TestFn) Result {
+        pub fn runBaseTestAt(r: *Runner, _: usize, testFn: TestFn) Result {
             var self: *@This() = @fieldParentPtr("runner", r);
 
             self.timer.reset();
@@ -262,23 +263,49 @@ pub const Runner = struct {
     // WithLeakDetection runner
     //
     pub const WithLeakDetection = struct {
-        runner: Runner = .{ .runTestFn = runWithLeakTest },
+        runner: Runner = .{ .runTestAtFn = runWithLeakTestAt },
         inner: *Runner,
 
         pub fn init(inner: *Runner) @This() {
             return .{ .inner = inner };
         }
 
-        pub fn runWithLeakTest(r: *Runner, testFn: TestFn) Result {
+        pub fn runWithLeakTestAt(r: *Runner, idx: usize, testFn: TestFn) Result {
             var self: *@This() = @fieldParentPtr("runner", r);
 
             std.testing.allocator_instance = .init;
 
-            var result = self.inner.runTest(testFn);
+            var result = self.inner.runTestAt(idx, testFn);
 
             if (std.testing.allocator_instance.deinit() == .leak) {
                 result.state = .{ .leak = if (@errorReturnTrace()) |trace| trace.* else null };
             }
+
+            return result;
+        }
+    };
+
+    //
+    // Slowest
+    //
+    pub const Slowest = struct {
+        runner: Runner = .{ .runTestAtFn = runSlowestTestAt },
+        inner: *Runner,
+        slowest: SlowestTests,
+
+        pub fn init(alloc: Allocator, max: usize, inner: *Runner) !@This() {
+            return .{ .slowest = try SlowestTests.init(alloc, max), .inner = inner };
+        }
+
+        pub fn deinit(self: *@This()) void {
+            self.slowest.deinit();
+        }
+
+        pub fn runSlowestTestAt(r: *Runner, idx: usize, testFn: TestFn) Result {
+            var self: *@This() = @fieldParentPtr("runner", r);
+
+            const result = self.inner.runTestAt(idx, testFn);
+            self.slowest.put(idx, result.duration_ns);
 
             return result;
         }
@@ -293,7 +320,7 @@ pub const Runner = struct {
         read_fd: std.posix.fd_t,
         saved_stderr: std.posix.fd_t,
 
-        runner: Runner = .{ .runTestFn = runWithCapture },
+        runner: Runner = .{ .runTestAtFn = runWithCaptureAt },
         inner: *Runner,
 
         pub fn init(inner: *Runner) @This() {
@@ -330,11 +357,11 @@ pub const Runner = struct {
             return n;
         }
 
-        pub fn runWithCapture(r: *Runner, testFn: TestFn) Result {
+        pub fn runWithCaptureAt(r: *Runner, idx: usize, testFn: TestFn) Result {
             var self: *@This() = @fieldParentPtr("runner", r);
 
             self.before();
-            var result = self.inner.runTest(testFn);
+            var result = self.inner.runTestAt(idx, testFn);
             const n = self.after();
 
             switch (result.state) {
@@ -370,6 +397,21 @@ pub const Output = struct {
         return self.onEndFn(self);
     }
 
+    pub fn prettyDuration(dur_ns: u64, writer: *std.Io.Writer) !void {
+        if (dur_ns >= 1_000_000_000) {
+            const secs = @as(f64, @floatFromInt(dur_ns)) / 1_000_000_000.0;
+            try writer.print("{d:.3} s", .{secs});
+        } else if (dur_ns >= 1_000_000) {
+            const ms = @as(f64, @floatFromInt(dur_ns)) / 1_000_000.0;
+            try writer.print("{d:.3} ms", .{ms});
+        } else if (dur_ns >= 1_000) {
+            const us = @as(f64, @floatFromInt(dur_ns)) / 1_000.0;
+            try writer.print("{d:.3} µs", .{us});
+        } else {
+            try writer.print("{d} ns", .{dur_ns});
+        }
+    }
+
     //
     // Output, default is printing to the console (stdout or stderr)
     //
@@ -377,7 +419,7 @@ pub const Output = struct {
         var buffer: [1024]u8 = undefined;
 
         writer: std.fs.File.Writer,
-        slowest: ?Slowest = null,
+        slowest: ?*SlowestTests = null,
         tty_config: std.Io.tty.Config,
 
         output: Output = .{
@@ -385,7 +427,7 @@ pub const Output = struct {
             .onEndFn = @This().onEnd,
         },
 
-        pub fn init(file: std.fs.File, slowest: ?Slowest) @This() {
+        pub fn init(file: std.fs.File, slowest: ?*SlowestTests) @This() {
             return .{
                 .writer = file.writer(&buffer),
                 .slowest = slowest,
@@ -393,16 +435,8 @@ pub const Output = struct {
             };
         }
 
-        pub fn deinit(self: *@This()) void {
-            if (self.slowest) |*slow| slow.deinit();
-        }
-
         pub fn onResult(out: *Output, idx: usize, r: *Runner.Result) anyerror!void {
             var self: *@This() = @fieldParentPtr("output", out);
-
-            if (self.slowest) |*slow| {
-                slow.put(idx, r.duration_ns);
-            }
 
             switch (r.state) {
                 .pass => out.pass += 1,
@@ -434,11 +468,13 @@ pub const Output = struct {
 
             var writer = &self.writer.interface;
 
-            if (self.slowest) |*slow| {
+            if (self.slowest) |slow| {
                 while (slow.queue.removeMaxOrNull()) |s| {
-                    try writer.print("{d}/{d} {s}...SLOWEST ({d}ns)\n", .{
-                        s.idx + 1, out.tests_len, out.tests[s.idx].name, s.duration_ns,
+                    try writer.print("{d}/{d} {s}...SLOWEST (", .{
+                        s.idx + 1, out.tests_len, out.tests[s.idx].name,
                     });
+                    try Output.prettyDuration(s.duration_ns, writer);
+                    try writer.print(")\n", .{});
                 }
             }
 
@@ -455,52 +491,52 @@ pub const Output = struct {
             try writer.flush();
         }
     };
+};
 
-    //
-    // Slowest
-    //
-    pub const Slowest = struct {
-        const Durations = struct {
-            idx: usize = 0,
-            duration_ns: u64,
-        };
+//
+// Slowest
+//
+pub const SlowestTests = struct {
+    const Durations = struct {
+        idx: usize = 0,
+        duration_ns: u64,
+    };
 
-        const Queue = std.PriorityDequeue(Durations, void, compare);
+    const Queue = std.PriorityDequeue(Durations, void, compare);
 
-        fn compare(_: void, d1: Durations, d2: Durations) std.math.Order {
-            return if (d1.duration_ns < d2.duration_ns) .lt else .gt;
+    fn compare(_: void, d1: Durations, d2: Durations) std.math.Order {
+        return if (d1.duration_ns < d2.duration_ns) .lt else .gt;
+    }
+
+    queue: Queue,
+    max: usize,
+
+    pub fn init(alloc: std.mem.Allocator, max: usize) !@This() {
+        var queue: Queue = .init(alloc, {});
+        try queue.ensureTotalCapacity(max);
+
+        return .{ .queue = queue, .max = max };
+    }
+
+    pub fn deinit(self: *@This()) void {
+        self.queue.deinit();
+    }
+
+    pub fn put(self: *@This(), idx: usize, duration_ns: u64) void {
+        if (self.queue.count() < self.max) {
+            self.queue.add(.{ .idx = idx, .duration_ns = duration_ns }) catch {
+                @panic("ERROR by add to slowest Queue");
+            };
+            return;
         }
 
-        queue: Queue,
-        max: usize,
-
-        pub fn init(alloc: std.mem.Allocator, max: usize) !@This() {
-            var queue: Queue = .init(alloc, {});
-            try queue.ensureTotalCapacity(max);
-
-            return .{ .queue = queue, .max = max };
-        }
-
-        pub fn deinit(self: *@This()) void {
-            self.queue.deinit();
-        }
-
-        pub fn put(self: *@This(), idx: usize, duration_ns: u64) void {
-            if (self.queue.count() < self.max) {
+        if (self.queue.peekMin()) |min| {
+            if (min.duration_ns < duration_ns) {
+                _ = self.queue.removeMin();
                 self.queue.add(.{ .idx = idx, .duration_ns = duration_ns }) catch {
                     @panic("ERROR by add to slowest Queue");
                 };
-                return;
-            }
-
-            if (self.queue.peekMin()) |min| {
-                if (min.duration_ns < duration_ns) {
-                    _ = self.queue.removeMin();
-                    self.queue.add(.{ .idx = idx, .duration_ns = duration_ns }) catch {
-                        @panic("ERROR by add to slowest Queue");
-                    };
-                }
             }
         }
-    };
+    }
 };

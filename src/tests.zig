@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const tr = @import("test_runner.zig");
 const Runner = tr.Runner;
 const Output = tr.Output;
+const SlowestTests = tr.SlowestTests;
 const Config = tr.Config;
 const runTests = tr.runTests;
 
@@ -126,8 +127,8 @@ const TestingOutput = struct {
     }
 };
 
-test "Slowest" {
-    var slowest = try Output.Slowest.init(std.testing.allocator, 3);
+test "SlowestTests" {
+    var slowest = try SlowestTests.init(std.testing.allocator, 3);
     defer slowest.deinit();
 
     slowest.put(2, 123);
