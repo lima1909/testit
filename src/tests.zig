@@ -28,6 +28,24 @@ test "config from args" {
     }
 
     {
+        var args = std.mem.tokenizeScalar(u8, "test --output", ' ');
+        const cfg = try Config.initFromArgs(&args);
+        try std.testing.expectEqual(Config.OutputType.console, cfg.output_type);
+    }
+
+    {
+        var args = std.mem.tokenizeScalar(u8, "test --output foo", ' ');
+        const cfg = try Config.initFromArgs(&args);
+        try std.testing.expectEqual(Config.OutputType.console, cfg.output_type);
+    }
+
+    {
+        var args = std.mem.tokenizeScalar(u8, "test --output json", ' ');
+        const cfg = try Config.initFromArgs(&args);
+        try std.testing.expectEqual(Config.OutputType.json, cfg.output_type);
+    }
+
+    {
         var args = std.mem.tokenizeScalar(u8, "test --shuffle-seed 42", ' ');
         const cfg = try Config.initFromArgs(&args);
         try std.testing.expectEqual(42, cfg.shuffle_seed);
@@ -91,12 +109,17 @@ test "config from args with errors" {
 // counts the result-states and the result-errors
 const TestingOutput = struct {
     output: Output = .{
+        .writer = undefined,
+        .onBeginFn = @This().onBegin,
         .onResultFn = @This().onResult,
         .onEndFn = @This().onEnd,
     },
 
     errors: std.ArrayListAligned(Runner.Result.Error, null) = .empty,
     alloc: std.mem.Allocator,
+
+    fn onBegin(_: *Output) anyerror!void {}
+    fn onEnd(_: *Output) anyerror!void {}
 
     fn onResult(out: *Output, _: usize, r: *Runner.Result) anyerror!void {
         var self: *@This() = @fieldParentPtr("output", out);
@@ -112,8 +135,6 @@ const TestingOutput = struct {
             },
         }
     }
-
-    fn onEnd(_: *Output) anyerror!void {}
 
     pub fn init(alloc: std.mem.Allocator) @This() {
         return .{ .alloc = alloc };

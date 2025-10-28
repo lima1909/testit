@@ -34,19 +34,24 @@ pub fn main() !void {
     const runner = if (slowest) |*s| &s.runner else &with_leak_detection.runner;
     defer if (slowest) |*s| s.deinit();
 
-    // Output
-    var console = Output.Console.init(cfg.file, if (slowest) |*s| &s.slowest else null);
-
-    // run all tests
-    runTests(tests, runner, &console.output);
+    // Output and run all tests
+    switch (cfg.output_type) {
+        .console => {
+            var console = Output.Console.init(cfg.file, if (slowest) |*s| &s.slowest else null);
+            runTests(tests, runner, &console.output);
+        },
+        .json => {
+            var console = Output.Json.init(cfg.file, &cfg, if (slowest) |*s| &s.slowest else null);
+            runTests(tests, runner, &console.output);
+        },
+    }
 }
 
 //
 // main function for the TestRunner
 //
 pub fn runTests(tests: []const std.builtin.TestFn, runner: *Runner, out: *Output) void {
-    out.tests = tests;
-    out.tests_len = tests.len;
+    out.onBegin(tests) catch |e| @panic(@errorName(e));
 
     for (tests, 0..) |t, idx| {
         var result = runner.runTestAt(idx, t.func);
@@ -63,6 +68,17 @@ pub const Config = struct {
     const TestFn = std.builtin.TestFn;
     const MTests = std.array_list.Aligned(std.builtin.TestFn, null);
 
+    pub const OutputType = enum {
+        console,
+        json,
+
+        pub fn fromString(s: []const u8) OutputType {
+            if (std.mem.eql(u8, s, "json")) return .json;
+
+            return .console;
+        }
+    };
+
     // needs mutability for filtering and shuffling
     mtests: ?MTests = null,
 
@@ -73,22 +89,19 @@ pub const Config = struct {
     filterFn: *const fn (alloc: Allocator, mtests: *MTests, ctests: []const TestFn, filter: []const u8) anyerror!void = defaultFilter,
 
     // shuffle the test with a given seed
-    shuffle_seed: u64 = 0,
+    shuffle_seed: ?u64 = null,
     // shuffle the test with the seed: std.time.milliTimestamp
     with_shuffle: bool = false,
     // the shuffle function
     shuffleFn: *const fn (tests: []TestFn, seed: u64) void = defaultShuffle,
 
     // Output.Writer write to stdout or stderr
+    output_type: OutputType = .console,
     file: std.fs.File,
-    slowest: usize,
+    slowest: usize = 0,
 
     pub fn init() @This() {
-        return .{
-            .shuffle_seed = @intCast(std.time.milliTimestamp()),
-            .file = std.fs.File.stdout(),
-            .slowest = 0,
-        };
+        return .{ .file = std.fs.File.stdout() };
     }
 
     pub fn deinit(self: *@This(), alloc: Allocator) void {
@@ -128,6 +141,10 @@ pub const Config = struct {
                 } else {
                     return error.MissingSlowestValue;
                 }
+            } else if (std.mem.eql(u8, "--output", arg)) {
+                if (args.next()) |o| {
+                    cfg.output_type = OutputType.fromString(o);
+                }
             } else {
                 // TODO: print help
                 std.debug.print("unkown option: {s}\n", .{arg});
@@ -149,7 +166,9 @@ pub const Config = struct {
                 self.mtests = .{};
                 try self.mtests.?.appendSlice(alloc, ctests);
             }
-            self.shuffleFn(self.mtests.?.items, self.shuffle_seed);
+
+            self.shuffle_seed = self.shuffle_seed orelse @intCast(std.time.milliTimestamp());
+            self.shuffleFn(self.mtests.?.items, self.shuffle_seed.?);
         }
     }
 
@@ -202,6 +221,15 @@ pub const Runner = struct {
             skip,
             fail: Error,
             leak: ?std.builtin.StackTrace,
+
+            pub fn fmt(self: State) []const u8 {
+                return switch (self) {
+                    .pass => "pass",
+                    .skip => "skip",
+                    .fail => "fail",
+                    .leak => "leak",
+                };
+            }
         };
 
         state: State,
@@ -378,6 +406,9 @@ pub const Runner = struct {
 // Output
 // --------------------------
 pub const Output = struct {
+    var buffer: [1024]u8 = undefined;
+    writer: std.fs.File.Writer,
+
     tests: []const std.builtin.TestFn = &.{},
     tests_len: usize = 0,
 
@@ -386,8 +417,18 @@ pub const Output = struct {
     leak: usize = 0,
     fail: usize = 0,
 
+    slowest: ?*SlowestTests = null,
+
+    onBeginFn: *const fn (*Output) anyerror!void,
     onResultFn: *const fn (*Output, usize, *Runner.Result) anyerror!void,
     onEndFn: *const fn (*Output) anyerror!void,
+
+    pub fn onBegin(self: *Output, tests: []const std.builtin.TestFn) anyerror!void {
+        self.tests = tests;
+        self.tests_len = tests.len;
+
+        return self.onBeginFn(self);
+    }
 
     pub fn onResult(self: *Output, idx: usize, r: *Runner.Result) anyerror!void {
         return self.onResultFn(self, idx, r);
@@ -416,79 +457,203 @@ pub const Output = struct {
     // Output, default is printing to the console (stdout or stderr)
     //
     pub const Console = struct {
-        var buffer: [1024]u8 = undefined;
-
-        writer: std.fs.File.Writer,
-        slowest: ?*SlowestTests = null,
+        output: Output,
         tty_config: std.Io.tty.Config,
-
-        output: Output = .{
-            .onResultFn = @This().onResult,
-            .onEndFn = @This().onEnd,
-        },
 
         pub fn init(file: std.fs.File, slowest: ?*SlowestTests) @This() {
             return .{
-                .writer = file.writer(&buffer),
-                .slowest = slowest,
+                .output = .{
+                    .onBeginFn = @This().onBegin,
+                    .onResultFn = @This().onResult,
+                    .onEndFn = @This().onEnd,
+                    .writer = file.writer(&Output.buffer),
+                    .slowest = slowest,
+                },
                 .tty_config = std.Io.tty.detectConfig(file),
             };
         }
 
-        pub fn onResult(out: *Output, idx: usize, r: *Runner.Result) anyerror!void {
-            var self: *@This() = @fieldParentPtr("output", out);
+        pub fn onBegin(_: *Output) anyerror!void {}
 
+        pub fn onResult(out: *Output, idx: usize, r: *Runner.Result) anyerror!void {
             switch (r.state) {
                 .pass => out.pass += 1,
                 .leak => |_| out.leak += 1,
                 .skip => {
                     out.skip += 1;
-                    var writer = &self.writer.interface;
-                    try writer.print("{d}/{d} {s}...SKIP\n", .{
+                    var w = &out.writer.interface;
+                    try w.print("{d}/{d} {s}...SKIP\n", .{
                         idx + 1, out.tests_len, out.tests[idx].name,
                     });
-                    try writer.flush();
+                    try w.flush();
                 },
                 .fail => |*e| {
                     out.fail += 1;
-                    var writer = &self.writer.interface;
-                    try writer.print("{d}/{d} {s}...FAIL ({t})\n", .{
+                    var w = &out.writer.interface;
+                    try w.print("{d}/{d} {s}...FAIL ({t})\n", .{
                         idx + 1, out.tests_len, out.tests[idx].name, e.err,
                     });
                     if (e.error_stack_trace) |trace| {
-                        try std.debug.writeStackTrace(trace, writer, try std.debug.getSelfDebugInfo(), self.tty_config);
+                        const self: *@This() = @fieldParentPtr("output", out);
+                        try std.debug.writeStackTrace(trace, w, try std.debug.getSelfDebugInfo(), self.tty_config);
                     }
-                    try writer.flush();
+                    try w.flush();
                 },
             }
         }
 
         pub fn onEnd(out: *Output) anyerror!void {
-            var self: *@This() = @fieldParentPtr("output", out);
+            var w = &out.writer.interface;
 
-            var writer = &self.writer.interface;
-
-            if (self.slowest) |slow| {
+            if (out.slowest) |slow| {
                 while (slow.queue.removeMaxOrNull()) |s| {
-                    try writer.print("{d}/{d} {s}...SLOWEST (", .{
+                    try w.print("{d}/{d} {s}...SLOWEST (", .{
                         s.idx + 1, out.tests_len, out.tests[s.idx].name,
                     });
-                    try Output.prettyDuration(s.duration_ns, writer);
-                    try writer.print(")\n", .{});
+                    try Output.prettyDuration(s.duration_ns, w);
+                    try w.print(")\n", .{});
                 }
             }
 
             if (out.pass == out.tests_len) {
-                try writer.print("All {d} tests passed.\n", .{out.pass});
+                try w.print("All {d} tests passed.\n", .{out.pass});
             } else {
-                try writer.print("{d} passed; {d} skipped; {d} failed.\n", .{ out.pass, out.skip, out.fail });
+                try w.print("{d} passed; {d} skipped; {d} failed.\n", .{ out.pass, out.skip, out.fail });
             }
 
             if (out.leak != 0) {
-                try writer.print("{d} tests leaked memory.\n", .{out.leak});
+                try w.print("{d} tests leaked memory.\n", .{out.leak});
             }
 
-            try writer.flush();
+            try w.flush();
+        }
+    };
+
+    //
+    // Json, printing to the console (stdout or stderr)
+    //
+    pub const Json = struct {
+        const Begin = struct {
+            tests: usize,
+            slowest: usize,
+            filter: ?[]const u8 = null,
+            shuffle_seed: ?u64 = null,
+        };
+
+        const End = struct {
+            pass: usize,
+            skip: usize,
+            fail: usize,
+            leak: usize,
+        };
+
+        const Result = struct {
+            @"test": []const u8, // test-name
+            i: usize, // idx
+            s: []const u8, // state
+            ns: u64, // duration in ns
+            e: ?struct {
+                err: anyerror,
+                stack_trace: ?[]const u8 = null,
+            } = null,
+        };
+
+        const Slowest = struct {
+            slowest: []const u8, // test-name
+            i: usize, // idx
+            ns: u64, // duration in ns
+        };
+
+        const stringify = std.json.Stringify;
+
+        output: Output,
+        cfg: *const Config,
+
+        pub fn init(file: std.fs.File, cfg: *const Config, slowest: ?*SlowestTests) @This() {
+            return .{
+                .output = .{
+                    .onBeginFn = @This().onBegin,
+                    .onResultFn = @This().onResult,
+                    .onEndFn = @This().onEnd,
+                    .writer = file.writer(&Output.buffer),
+                    .slowest = slowest,
+                },
+                .cfg = cfg,
+            };
+        }
+
+        pub fn onBegin(out: *Output) anyerror!void {
+            const self: *@This() = @fieldParentPtr("output", out);
+            var w = &out.writer.interface;
+
+            try stringify.value(Begin{
+                .tests = out.tests_len,
+                .slowest = @min(if (out.slowest) |s| s.max else 0, out.tests_len),
+                .filter = self.cfg.filter_string,
+                .shuffle_seed = self.cfg.shuffle_seed,
+            }, .{}, w);
+            try w.print("\n", .{});
+            try w.flush();
+        }
+
+        pub fn onResult(out: *Output, idx: usize, r: *Runner.Result) anyerror!void {
+            var w = &out.writer.interface;
+
+            defer {
+                w.print("\n", .{}) catch |e| @panic(@errorName(e));
+                w.flush() catch |e| @panic(@errorName(e));
+            }
+
+            var json_result = Result{
+                .@"test" = out.tests[idx].name,
+                .i = idx,
+                .s = r.state.fmt(),
+                .ns = r.duration_ns,
+            };
+
+            switch (r.state) {
+                .pass => out.pass += 1,
+                .leak => out.leak += 1,
+                .skip => out.skip += 1,
+                .fail => |*e| {
+                    out.fail += 1;
+                    if (e.error_stack_trace) |trace| {
+                        var err_buf: [2048]u8 = undefined;
+                        // disable color in StackTrace: zig build test --color off
+                        json_result.e = .{
+                            .err = e.err,
+                            .stack_trace = try std.fmt.bufPrint(&err_buf, "{f}", .{trace}),
+                        };
+                        try stringify.value(json_result, .{}, w);
+                        return;
+                    }
+                },
+            }
+
+            try stringify.value(json_result, .{}, w);
+        }
+
+        pub fn onEnd(out: *Output) anyerror!void {
+            var w = &out.writer.interface;
+
+            if (out.slowest) |slow| {
+                while (slow.queue.removeMaxOrNull()) |s| {
+                    try stringify.value(Slowest{
+                        .slowest = out.tests[s.idx].name,
+                        .i = s.idx,
+                        .ns = s.duration_ns,
+                    }, .{}, w);
+                    try w.print("\n", .{});
+                }
+            }
+
+            try stringify.value(End{
+                .pass = out.pass,
+                .skip = out.skip,
+                .fail = out.fail,
+                .leak = out.leak,
+            }, .{}, w);
+            try w.flush();
         }
     };
 };
