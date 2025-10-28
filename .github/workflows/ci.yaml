@@ -33,5 +33,5 @@ jobs:
       - name: run test_runner shuffle, filter and slowest
         run: zig build test -- --shuffle --filter pass --slowest 1 --stderr
       - name: run test_runner JSON shuffle, filter and slowest
-        run: zig build test -- --slowest 3 --filter pass --output json --shuffle --shuffle-seed
+        run: zig build test -- --slowest 3 --filter pass --output json --shuffle --shuffle-seed 2
 
