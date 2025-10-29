@@ -30,19 +30,19 @@ test "config from args" {
     {
         var args = std.mem.tokenizeScalar(u8, "test --output", ' ');
         const cfg = try Config.initFromArgs(&args);
-        try std.testing.expectEqual(Config.OutputType.console, cfg.output_type);
+        try std.testing.expectEqual(Output.Format.console, cfg.format);
     }
 
     {
         var args = std.mem.tokenizeScalar(u8, "test --output foo", ' ');
         const cfg = try Config.initFromArgs(&args);
-        try std.testing.expectEqual(Config.OutputType.console, cfg.output_type);
+        try std.testing.expectEqual(Output.Format.console, cfg.format);
     }
 
     {
         var args = std.mem.tokenizeScalar(u8, "test --output json", ' ');
         const cfg = try Config.initFromArgs(&args);
-        try std.testing.expectEqual(Config.OutputType.json, cfg.output_type);
+        try std.testing.expectEqual(Output.Format.json, cfg.format);
     }
 
     {
@@ -168,7 +168,7 @@ test "Runner base pass" {
         fn func() !void {}
     }.func;
 
-    var base = try Runner.Base.init();
+    var base = Runner.Base.init();
     const result = &base.runner.runTest(testFn);
 
     try std.testing.expectEqual(.pass, result.state);
@@ -182,7 +182,7 @@ test "Runner base skip" {
         }
     }.func;
 
-    var base = try Runner.Base.init();
+    var base = Runner.Base.init();
     const result = &base.runner.runTest(testFn);
 
     try std.testing.expectEqual(.skip, result.state);
@@ -196,7 +196,7 @@ test "Runner base error" {
         }
     }.func;
 
-    var base = try Runner.Base.init();
+    var base = Runner.Base.init();
     const result = &base.runner.runTest(testFn);
 
     try std.testing.expectEqual(error.TestError, result.state.fail.err);
@@ -213,7 +213,7 @@ test "runner one test" {
         },
     };
 
-    var base = try Runner.Base.init();
+    var base = Runner.Base.init();
     var out = TestingOutput.init(std.testing.allocator);
     defer out.deinit();
 
@@ -268,7 +268,7 @@ test "run all tests with filter" {
         },
     };
 
-    var base = try Runner.Base.init();
+    var base = Runner.Base.init();
     const runner = &base.runner;
     // var capture: Runner.WithCaptureStdErrLinux = undefined;
     // const runner = blk: switch (builtin.os.tag) {
@@ -286,10 +286,10 @@ test "run all tests with filter" {
 
     var cfg: Config = .init();
     cfg.filter_string = "test";
-    try cfg.configureFilterAndShuffle(std.testing.allocator, &tests);
+    const ctests = try cfg.processTests(std.testing.allocator, &tests);
     defer cfg.deinit(std.testing.allocator);
 
-    runTests(cfg.mtests.?.items, runner, &out.output);
+    runTests(ctests, runner, &out.output);
 
     try std.testing.expectEqual(4, out.output.tests.len);
     try std.testing.expectEqualStrings("test error 0", out.output.tests[0].name);
