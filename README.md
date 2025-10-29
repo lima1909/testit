@@ -1,8 +1,8 @@
 <div align="center">
 
-# TestIt - a test-runner written in Zig
+# TestIt 
 
-![zig version](https://img.shields.io/badge/zig%20version-0.15-fcca77)
+![zig version](https://img.shields.io/badge/zig%20version-0.15-fcca77?style=for-the-badge)
 [![Build Status](https://img.shields.io/github/actions/workflow/status/lima1909/testit/ci.yaml?style=for-the-badge)](https://github.com/lima1909/testit/actions)
 ![License](https://img.shields.io/github/license/lima1909/testit?style=for-the-badge)
 [![Stars](https://img.shields.io/github/stars/lima1909/testit?style=for-the-badge)](https://github.com/lima1909/testit/stargazers)
@@ -11,7 +11,9 @@
 
 `TestIt` is a ready-made test-runner AND a library for building your own test-runner, written in ⚡ZIG ⚡.
 
-*TestIt is in a very early stage of development and can change!*
+<div style="padding:10px;border:2px solid #f39c12;" align="center">
+<strong>TestIt is in a very early stage of development and can change!:</strong>
+</div>
 
 
 ## Features
