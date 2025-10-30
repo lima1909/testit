@@ -10,97 +10,107 @@ const runTests = tr.runTests;
 
 test "config from args" {
     {
-        var args = std.mem.tokenizeScalar(u8, "test --filter pass", ' ');
-        const cfg = try Config.initFromArgs(&args);
-        try std.testing.expectEqualStrings("pass", cfg.filter_string.?);
+        var cfg = Config.init();
+        var args = std.mem.tokenizeScalar(u8, "--filter pass", ' ');
+        try Config.Cli.parse(&cfg, &args);
+        try std.testing.expectEqualStrings("pass", cfg.filter.?);
     }
 
     {
-        var args = std.mem.tokenizeScalar(u8, "test --slowest 2", ' ');
-        const cfg = try Config.initFromArgs(&args);
+        var cfg = Config.init();
+        var args = std.mem.tokenizeScalar(u8, "--filter 'pa'ss'", ' ');
+        try Config.Cli.parse(&cfg, &args);
+        try std.testing.expectEqualStrings("pa'ss", cfg.filter.?);
+    }
+
+    {
+        var cfg = Config.init();
+        var args = std.mem.tokenizeScalar(u8,
+            \\--filter "pass"
+        , ' ');
+        try Config.Cli.parse(&cfg, &args);
+        try std.testing.expectEqualStrings("pass", cfg.filter.?);
+    }
+
+    {
+        var cfg = Config.init();
+        var args = std.mem.tokenizeScalar(u8, "--slowest 2", ' ');
+        try Config.Cli.parse(&cfg, &args);
         try std.testing.expectEqual(2, cfg.slowest);
     }
 
     {
-        var args = std.mem.tokenizeScalar(u8, "test --shuffle", ' ');
-        const cfg = try Config.initFromArgs(&args);
-        try std.testing.expectEqual(true, cfg.with_shuffle);
+        var cfg = Config.init();
+        var args = std.mem.tokenizeScalar(u8, "--shuffle", ' ');
+        try Config.Cli.parse(&cfg, &args);
+        try std.testing.expectEqual(0, cfg.shuffle);
     }
 
     {
-        var args = std.mem.tokenizeScalar(u8, "test --output", ' ');
-        const cfg = try Config.initFromArgs(&args);
+        var cfg = Config.init();
+        var args = std.mem.tokenizeScalar(u8, "--output", ' ');
+        try Config.Cli.parse(&cfg, &args);
         try std.testing.expectEqual(Output.Format.console, cfg.format);
     }
 
     {
-        var args = std.mem.tokenizeScalar(u8, "test --output foo", ' ');
-        const cfg = try Config.initFromArgs(&args);
+        var cfg = Config.init();
+        var args = std.mem.tokenizeScalar(u8, "--output foo", ' ');
+        try Config.Cli.parse(&cfg, &args);
         try std.testing.expectEqual(Output.Format.console, cfg.format);
     }
 
     {
-        var args = std.mem.tokenizeScalar(u8, "test --output json", ' ');
-        const cfg = try Config.initFromArgs(&args);
+        var cfg = Config.init();
+        var args = std.mem.tokenizeScalar(u8, "--output json", ' ');
+        try Config.Cli.parse(&cfg, &args);
         try std.testing.expectEqual(Output.Format.json, cfg.format);
     }
 
     {
-        var args = std.mem.tokenizeScalar(u8, "test --shuffle-seed 42", ' ');
-        const cfg = try Config.initFromArgs(&args);
-        try std.testing.expectEqual(42, cfg.shuffle_seed);
+        var cfg = Config.init();
+        var args = std.mem.tokenizeScalar(u8, "--shuffle 42", ' ');
+        try Config.Cli.parse(&cfg, &args);
+        try std.testing.expectEqual(42, cfg.shuffle);
     }
 
     {
-        var args = std.mem.tokenizeScalar(u8, "test --filter pass    --shuffle  --slowest 2", ' ');
-        const cfg = try Config.initFromArgs(&args);
-        try std.testing.expectEqualStrings("pass", cfg.filter_string.?);
-        try std.testing.expectEqual(true, cfg.with_shuffle);
+        var cfg = Config.init();
+        var args = std.mem.tokenizeScalar(u8, "--filter pass    --shuffle  --slowest 2", ' ');
+        try Config.Cli.parse(&cfg, &args);
+        try std.testing.expectEqualStrings("pass", cfg.filter.?);
+        try std.testing.expectEqual(0, cfg.shuffle);
         try std.testing.expectEqual(2, cfg.slowest);
     }
 }
 
 test "config from args with errors" {
     {
-        var args = std.mem.tokenizeScalar(u8, "test --filter", ' ');
-        const err = Config.initFromArgs(&args);
+        var cfg = Config.init();
+        var args = std.mem.tokenizeScalar(u8, "--filter", ' ');
+        const err = Config.Cli.parse(&cfg, &args);
         try std.testing.expectEqual(error.MissingFilterString, err);
     }
 
     {
-        var args = std.mem.tokenizeScalar(u8, "test --slowest -a-number", ' ');
-        const err = Config.initFromArgs(&args);
+        var cfg = Config.init();
+        var args = std.mem.tokenizeScalar(u8, "--slowest -a-number", ' ');
+        const err = Config.Cli.parse(&cfg, &args);
         try std.testing.expectEqual(error.InvalidSlowestValue, err);
     }
 
     {
-        var args = std.mem.tokenizeScalar(u8, "test --shuffle-seed", ' ');
-        const err = Config.initFromArgs(&args);
-        try std.testing.expectEqual(error.MissingShuffleSeed, err);
-    }
-
-    {
-        var args = std.mem.tokenizeScalar(u8, "test --shuffle-seed not-a-number", ' ');
-        const err = Config.initFromArgs(&args);
-        try std.testing.expectEqual(error.InvalidShuffleSeed, err);
-    }
-
-    {
-        var args = std.mem.tokenizeScalar(u8, "test --foo", ' ');
-        const err = Config.initFromArgs(&args);
+        var cfg = Config.init();
+        var args = std.mem.tokenizeScalar(u8, "--foo", ' ');
+        const err = Config.Cli.parse(&cfg, &args);
         try std.testing.expectEqual(error.UnkownOption, err);
     }
 
     {
-        var args = std.mem.tokenizeScalar(u8, "test   --slowest --shuffle", ' ');
-        const err = Config.initFromArgs(&args);
+        var cfg = Config.init();
+        var args = std.mem.tokenizeScalar(u8, "--slowest --shuffle", ' ');
+        const err = Config.Cli.parse(&cfg, &args);
         try std.testing.expectEqual(error.InvalidSlowestValue, err);
-    }
-
-    {
-        var args = std.mem.tokenizeScalar(u8, "test   --shuffle-seed --shuffle", ' ');
-        const err = Config.initFromArgs(&args);
-        try std.testing.expectEqual(error.InvalidShuffleSeed, err);
     }
 }
 
@@ -285,11 +295,11 @@ test "run all tests with filter" {
     defer out.deinit();
 
     var cfg: Config = .init();
-    cfg.filter_string = "test";
-    const ctests = try cfg.processTests(std.testing.allocator, &tests);
-    defer cfg.deinit(std.testing.allocator);
+    cfg.filter = "test";
+    var ctests = try Config.Tests.processTests(std.testing.allocator, &tests, &cfg);
+    defer ctests.deinit(std.testing.allocator);
 
-    runTests(ctests, runner, &out.output);
+    runTests(ctests.testFns(), runner, &out.output);
 
     try std.testing.expectEqual(4, out.output.tests.len);
     try std.testing.expectEqualStrings("test error 0", out.output.tests[0].name);

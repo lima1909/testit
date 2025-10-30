@@ -10,36 +10,25 @@ pub fn main() !void {
     defer std.debug.assert(gpa.deinit() == .ok);
     const alloc = gpa.allocator();
 
-    // configure with command line args
-    var args = try std.process.argsWithAllocator(alloc);
-    defer args.deinit();
-
-    var cfg = try Config.initFromArgs(&args);
-    defer cfg.deinit(alloc);
+    // configure with Environment variable TESTIT_ARGS and/or CLI args
+    var cfg: Config = .init();
+    var tests = try Config.Cli.init(alloc, &cfg, @import("builtin").test_functions);
+    defer tests.deinit(alloc);
 
     // Runner
-    var with_leak_detection = Runner.WithLeakDetection.init();
-    var slowest: ?Runner.Slowest = if (cfg.slowest > 0)
-        try Runner.Slowest.init(alloc, cfg.slowest, &with_leak_detection.runner)
-    else
-        null;
-    defer if (slowest) |*s| s.deinit();
-
-    const slowest_ptr = if (slowest) |*s| &s.slowest else null;
-    const runner = if (slowest) |*s| &s.runner else &with_leak_detection.runner;
-
-    // processed the tests, means optional filtering and/or shuffling
-    const tests = try cfg.processTests(alloc, @import("builtin").test_functions);
+    var runner = Runner.Default{ .with_leak_detection = .init() };
+    try runner.withSlowest(alloc, cfg.slowest);
+    defer runner.deinit();
 
     // Output and run all tests
     switch (cfg.format) {
         .console => {
-            var console = Output.Console.init(cfg.file, slowest_ptr);
-            runTests(tests, runner, &console.output);
+            var console = Output.Console.init(cfg.file, runner.slowestPtr());
+            runTests(tests.testFns(), runner.runner(), &console.output);
         },
         .json => {
-            var console = Output.Json.init(cfg.file, &cfg, slowest_ptr);
-            runTests(tests, runner, &console.output);
+            var console = Output.Json.init(cfg.file, &cfg, runner.slowestPtr());
+            runTests(tests.testFns(), runner.runner(), &console.output);
         },
     }
 }
@@ -63,14 +52,11 @@ pub fn runTests(tests: []const std.builtin.TestFn, runner: *Runner, out: *Output
 //
 pub const Config = struct {
     const TestFn = std.builtin.TestFn;
-    const MTests = std.array_list.Aligned(std.builtin.TestFn, null);
+    const MTests = std.array_list.Aligned(TestFn, null);
 
-    // needs mutability for filtering and shuffling
-    mtests: ?MTests = null,
-
-    // TestFn.name contains filter_string
+    // TestFn.name contains the filter string
     // --test-filter [text]           Skip tests that do not match any filter
-    filter_string: ?[]const u8 = null,
+    filter: ?[]const u8 = null,
     // the filter function
     filterFn: *const fn (
         alloc: Allocator,
@@ -79,98 +65,142 @@ pub const Config = struct {
         filter: []const u8,
     ) anyerror!void = defaultFilter,
 
-    // shuffle the test with the seed: std.time.milliTimestamp
-    with_shuffle: bool = false,
-    // shuffle the test with a given seed
-    shuffle_seed: ?u64 = null,
+    // shuffle the tests with the given seed:
+    // - null -> no shuffle
+    // - 0 -> default shuffle: std.time.milliTimestamp
+    // - else -> the value is the seed
+    shuffle: ?u64 = null,
     // the shuffle function
     shuffleFn: *const fn (
         tests: []TestFn,
         seed: u64,
     ) void = defaultShuffle,
 
+    slowest: usize = 0,
+
     // Output.Writer write to stdout or stderr
     format: Output.Format = .console,
     file: std.fs.File,
-
-    slowest: usize = 0,
 
     pub fn init() @This() {
         return .{ .file = std.fs.File.stdout() };
     }
 
-    pub fn deinit(self: *@This(), alloc: Allocator) void {
-        if (self.mtests) |*mtests| mtests.deinit(alloc);
-    }
+    pub const Cli = struct {
 
-    // create Config based of an process.ArgIterator
-    // is of type anytype, for test purpose
-    //
-    // IMPORTANT: the args must lived as long the Config!
-    pub fn initFromArgs(args: anytype) !@This() {
-        var cfg: @This() = .init();
+        // create Config based of an process ENV and.Args
+        pub fn init(alloc: Allocator, cfg: *Config, ctests: []const TestFn) !Tests {
+            var deinit_env: ?[]const u8 = null;
 
-        // ignore executable name
-        _ = args.next();
+            // --- ENV args ---
+            if (std.process.getEnvVarOwned(alloc, "TESTIT_ARGS") catch null) |env| {
+                deinit_env = env;
 
-        while (args.next()) |arg| {
-            if (std.mem.eql(u8, "--filter", arg)) {
-                if (args.next()) |filter| {
-                    cfg.filter_string = filter;
-                } else {
-                    return error.MissingFilterString;
-                }
-            } else if (std.mem.eql(u8, "--shuffle", arg)) {
-                cfg.with_shuffle = true;
-            } else if (std.mem.eql(u8, "--shuffle-seed", arg)) {
-                if (args.next()) |seed| {
-                    cfg.shuffle_seed = std.fmt.parseUnsigned(u64, seed, 0) catch return error.InvalidShuffleSeed;
-                } else {
-                    return error.MissingShuffleSeed;
-                }
-            } else if (std.mem.eql(u8, "--stderr", arg)) {
-                cfg.file = std.fs.File.stderr();
-            } else if (std.mem.eql(u8, "--slowest", arg)) {
-                if (args.next()) |slowest| {
-                    cfg.slowest = std.fmt.parseUnsigned(usize, slowest, 0) catch return error.InvalidSlowestValue;
-                } else {
-                    return error.MissingSlowestValue;
-                }
-            } else if (std.mem.eql(u8, "--output", arg)) {
-                if (args.next()) |o| {
-                    cfg.format = Output.Format.fromString(o);
-                }
-            } else if (std.mem.containsAtLeast(u8, arg, 1, "--seed=")) {
-                // ignore seed, comes from zig
-            } else {
-                // TODO: print help
-                // std.debug.print("unkown option: {s}\n", .{arg});
-                return error.UnkownOption;
+                var env_args = std.mem.tokenizeScalar(u8, env, ' ');
+                try parse(cfg, &env_args);
+            }
+            defer if (deinit_env) |env| alloc.free(env);
+
+            // --- CLI args ---
+            var args = try std.process.argsWithAllocator(alloc);
+            defer args.deinit();
+
+            // ignore executable name
+            _ = args.next();
+            try parse(cfg, &args);
+
+            // processed the tests, means optional filtering and/or shuffling
+            return Tests.processTests(alloc, ctests, cfg);
+        }
+
+        pub fn parse(c: *Config, iter: anytype) !void {
+            while (iter.next()) |a| {
+                const inner = struct {
+                    fn inner(cfg: *Config, args: anytype, arg: []const u8) !void {
+                        if (std.mem.eql(u8, "--filter", arg)) {
+                            if (args.next()) |filter| {
+                                cfg.filter = std.mem.trim(u8, filter, "'");
+                                // there was no trim, try it with "
+                                if (cfg.filter.?.len == filter.len) {
+                                    cfg.filter = std.mem.trim(u8, filter, "\"");
+                                }
+                            } else {
+                                return error.MissingFilterString;
+                            }
+                        } else if (std.mem.eql(u8, "--shuffle", arg)) {
+                            cfg.shuffle = 0; // with shuffle
+                            if (args.next()) |seed| {
+                                // no number means, default shuffle
+                                cfg.shuffle = std.fmt.parseUnsigned(u64, seed, 0) catch 0;
+                                // seed is not a number, maybe a next arg
+                                if (cfg.shuffle == 0) {
+                                    try inner(cfg, args, seed);
+                                }
+                            }
+                        } else if (std.mem.eql(u8, "--stderr", arg)) {
+                            cfg.file = std.fs.File.stderr();
+                        } else if (std.mem.eql(u8, "--slowest", arg)) {
+                            if (args.next()) |slowest| {
+                                cfg.slowest = std.fmt.parseUnsigned(usize, slowest, 0) catch return error.InvalidSlowestValue;
+                            } else {
+                                return error.MissingSlowestValue;
+                            }
+                        } else if (std.mem.eql(u8, "--output", arg)) {
+                            if (args.next()) |out| {
+                                cfg.format = Output.Format.fromString(out);
+                            }
+                        } else if (std.mem.containsAtLeast(u8, arg, 1, "--seed=")) {
+                            // ignore seed, comes from zig
+                        } else {
+                            // TODO: print help
+                            // std.debug.print("unkown option: {s}\n", .{arg});
+                            return error.UnkownOption;
+                        }
+                    }
+                }.inner;
+
+                try inner(c, iter, a);
+            }
+        }
+    };
+
+    pub const Tests = union(enum) {
+        static: []const TestFn, // the original tests
+        dyn: MTests, // needs mutability for filtering and shuffling
+
+        pub fn deinit(self: *@This(), alloc: Allocator) void {
+            if (self.* == .dyn) self.dyn.deinit(alloc);
+        }
+
+        pub fn testFns(self: @This()) []const TestFn {
+            switch (self) {
+                .static => |s| return s,
+                .dyn => |d| return d.items,
             }
         }
 
-        return cfg;
-    }
+        // processed the tests, means optional filtering and/or shuffling
+        pub fn processTests(alloc: Allocator, ctests: []const TestFn, cfg: *Config) !Tests {
+            var tests: ?Tests = null;
 
-    // processed the tests, means optional filtering and/or shuffling
-    pub fn processTests(self: *@This(), alloc: Allocator, ctests: []const TestFn) ![]const TestFn {
-        if (self.filter_string) |filter| {
-            self.mtests = try .initCapacity(alloc, ctests.len);
-            try self.filterFn(alloc, &self.mtests.?, ctests, filter);
-        }
-
-        if (self.with_shuffle) {
-            if (self.mtests == null) {
-                self.mtests = .{};
-                try self.mtests.?.appendSlice(alloc, ctests);
+            if (cfg.filter) |filter| {
+                tests = .{ .dyn = try .initCapacity(alloc, ctests.len) };
+                try cfg.filterFn(alloc, &tests.?.dyn, ctests, filter);
             }
 
-            self.shuffle_seed = self.shuffle_seed orelse @intCast(std.time.milliTimestamp());
-            self.shuffleFn(self.mtests.?.items, self.shuffle_seed.?);
-        }
+            if (cfg.shuffle) |seed| {
+                if (tests == null) {
+                    tests = .{ .dyn = .{} };
+                    try tests.?.dyn.appendSlice(alloc, ctests);
+                }
 
-        return if (self.mtests) |mtests| mtests.items else ctests;
-    }
+                cfg.shuffle = if (seed != 0) seed else @intCast(std.time.milliTimestamp());
+                cfg.shuffleFn(tests.?.dyn.items, cfg.shuffle.?);
+            }
+
+            return if (tests) |t| t else .{ .static = ctests };
+        }
+    };
 
     // create a list of tests for a given filter
     fn defaultFilter(alloc: Allocator, mtests: *MTests, ctests: []const TestFn, filter: []const u8) !void {
@@ -248,6 +278,33 @@ pub const Runner = struct {
     pub fn runTestAt(self: *Runner, idx: usize, testFn: TestFn) Result {
         return self.runTestAtFn(self, idx, testFn);
     }
+
+    //
+    // Default runner
+    //
+    pub const Default = struct {
+        with_leak_detection: WithLeakDetection,
+        slowest: ?Slowest = null,
+
+        pub fn withSlowest(self: *@This(), alloc: Allocator, slowest_max: usize) !void {
+            self.slowest = if (slowest_max > 0)
+                try .init(alloc, slowest_max, &self.with_leak_detection.runner)
+            else
+                null;
+        }
+
+        pub fn deinit(self: *@This()) void {
+            if (self.slowest) |*s| s.deinit();
+        }
+
+        pub fn runner(self: *@This()) *Runner {
+            return if (self.slowest) |*s| &s.runner else &self.with_leak_detection.runner;
+        }
+
+        pub fn slowestPtr(self: *@This()) ?*SlowestTests {
+            return if (self.slowest) |*s| &s.slowest else null;
+        }
+    };
 
     //
     // Base runner
@@ -547,7 +604,6 @@ pub const Output = struct {
         const Begin = struct {
             tests: usize,
             slowest: usize,
-            filter: ?[]const u8 = null,
             shuffle_seed: ?u64 = null,
         };
 
@@ -600,8 +656,7 @@ pub const Output = struct {
             try stringify.value(Begin{
                 .tests = out.tests_len,
                 .slowest = @min(if (out.slowest) |s| s.max else 0, out.tests_len),
-                .filter = self.cfg.filter_string,
-                .shuffle_seed = self.cfg.shuffle_seed,
+                .shuffle_seed = self.cfg.shuffle,
             }, .{}, w);
             try w.print("\n", .{});
             try w.flush();

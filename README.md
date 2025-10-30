@@ -11,8 +11,9 @@
 
 `TestIt` is a ready-made test-runner AND a library for building your own test-runner, written in ⚡ZIG ⚡.
 
-<div style="padding:10px;border:2px solid #f39c12;" align="center">
-<strong>TestIt is in a very early stage of development and can change!:</strong>
+
+<div align="center">
+<strong>TestIt is in a very early stage of development and can change!</strong>
 </div>
 
 
@@ -24,6 +25,7 @@
 - Show duration of every test
 - Memory leak detection
 - Multiple output formats: console, JSON (well suited for further processing, like CI or IDE )
+- configure the test-runner per command-line-args and/or environment variables
 
 ## Installation
 
@@ -46,9 +48,28 @@ const tests = b.addTest(.{
 });
 ```
 
-Run tests (with JSON output):
+## Command Line 
+
+ARGS for the command line usage.
+
+You can set args by command line argument or by environment variable or both.
+By both, the command line arguments overwrite the environment variable values.
 
 ```bash
+# commandline arguments
+❯ zig build test -- [ARGS]
+
+# run tests with JSON output
 ❯ zig build test -- --output json 
+
+# environment and commandline arguments
+❯ TESTIT_ARGS="--slowest 1 --filter my-filter --shuffle" zig build test -- --output json
 ```
 
+| Arg                         | Description                                 | 
+|-----------------------------|---------------------------------------------|
+| `--slowest [usize]`         | show the [value] slowest tests              |
+| `--filter [string]`         | run all tests, which contains the [string]  |
+| `--shuffle [u64]`           | shuffle tests, which optional seed [u64]    |
+| `--output [console|json]`   | output format, default is `console`         |
+| `--stderr`                  | output to `stderr`, default is `stdout`     |
