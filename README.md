@@ -12,7 +12,7 @@
 `TestIt` is a ready-made test-runner AND a library for building your own test-runner, written in ⚡ZIG ⚡.
 
 
-<div align="center">
+<div>
 <strong>TestIt is in a very early stage of development and can change!</strong>
 </div>
 
@@ -66,10 +66,10 @@ By both, the command line arguments overwrite the environment variable values.
 ❯ TESTIT_ARGS="--slowest 1 --filter my-filter --shuffle" zig build test -- --output json
 ```
 
-| Arg                         | Description                                 | 
-|-----------------------------|---------------------------------------------|
-| `--slowest [usize]`         | show the [value] slowest tests              |
-| `--filter [string]`         | run all tests, which contains the [string]  |
-| `--shuffle [u64]`           | shuffle tests, which optional seed [u64]    |
-| `--output [console|json]`   | output format, default is `console`         |
-| `--stderr`                  | output to `stderr`, default is `stdout`     |
+| Arg                            | Description                                 | 
+|--------------------------------|---------------------------------------------|
+| `--slowest [usize]`            | show the [value] slowest tests              |
+| `--filter [string]`            | run all tests, which contains the [string]  |
+| `--shuffle [u64]`              | shuffle tests, which optional seed [u64]    |
+| `--output [console or json]`   | output format, default is `console`         |
+| `--stderr`                     | output to `stderr`, default is `stdout`     |
