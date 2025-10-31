@@ -11,40 +11,18 @@ pub fn main() !void {
     const alloc = gpa.allocator();
 
     // configure with Environment variable TESTIT_ARGS and/or CLI args
-    var cfg: Config = .init();
+    var cfg: Config = .default();
     var tests = try Config.Cli.init(alloc, &cfg, @import("builtin").test_functions);
     defer tests.deinit(alloc);
 
     // Runner
-    var runner = Runner.Default{ .with_leak_detection = .init() };
+    var runner = Runner.Default{ .with_leak_detection = .new() };
     try runner.withSlowest(alloc, cfg.slowest);
     defer runner.deinit();
 
     // Output and run all tests
-    switch (cfg.format) {
-        .console => {
-            var console = Output.Console.init(cfg.file, runner.slowestPtr());
-            runTests(tests.testFns(), runner.runner(), &console.output);
-        },
-        .json => {
-            var console = Output.Json.init(cfg.file, &cfg, runner.slowestPtr());
-            runTests(tests.testFns(), runner.runner(), &console.output);
-        },
-    }
-}
-
-//
-// main function for the TestRunner
-//
-pub fn runTests(tests: []const std.builtin.TestFn, runner: *Runner, out: *Output) void {
-    out.onBegin(tests) catch |e| @panic(@errorName(e));
-
-    for (tests, 0..) |t, idx| {
-        var result = runner.runTestAt(idx, t.func);
-        out.onResult(idx, &result) catch |err| @panic(@errorName(err));
-    }
-
-    out.onEnd() catch |e| @panic(@errorName(e));
+    var out = Output.Instance.new(&cfg, runner.slowestPtr());
+    runner.runner().runTests(tests.testFns(), out.output());
 }
 
 //
@@ -79,12 +57,24 @@ pub const Config = struct {
     slowest: usize = 0,
 
     // Output.Writer write to stdout or stderr
-    format: Output.Format = .console,
+    format: Format = .console,
     file: std.fs.File,
 
-    pub fn init() @This() {
+    pub fn default() @This() {
         return .{ .file = std.fs.File.stdout() };
     }
+
+    pub const Format = enum {
+        console,
+        json,
+
+        pub fn fromString(s: []const u8) Format {
+            if (std.mem.eql(u8, s, "json")) return .json;
+
+            // default is console
+            return .console;
+        }
+    };
 
     pub const Cli = struct {
 
@@ -147,7 +137,7 @@ pub const Config = struct {
                             }
                         } else if (std.mem.eql(u8, "--output", arg)) {
                             if (args.next()) |out| {
-                                cfg.format = Output.Format.fromString(out);
+                                cfg.format = Format.fromString(out);
                             }
                         } else if (std.mem.containsAtLeast(u8, arg, 1, "--seed=")) {
                             // ignore seed, comes from zig
@@ -180,7 +170,7 @@ pub const Config = struct {
         }
 
         // processed the tests, means optional filtering and/or shuffling
-        pub fn processTests(alloc: Allocator, ctests: []const TestFn, cfg: *Config) !Tests {
+        pub fn processTests(alloc: Allocator, ctests: []const TestFn, cfg: *Config) !@This() {
             var tests: ?Tests = null;
 
             if (cfg.filter) |filter| {
@@ -280,6 +270,20 @@ pub const Runner = struct {
     }
 
     //
+    // main function for the TestRunner
+    //
+    pub fn runTests(runner: *Runner, tests: []const std.builtin.TestFn, out: *Output) void {
+        out.onBegin(tests) catch |e| @panic(@errorName(e));
+
+        for (tests, 0..) |t, idx| {
+            var result = runner.runTestAt(idx, t.func);
+            out.onResult(idx, &result) catch |err| @panic(@errorName(err));
+        }
+
+        out.onEnd() catch |e| @panic(@errorName(e));
+    }
+
+    //
     // Default runner
     //
     pub const Default = struct {
@@ -301,7 +305,7 @@ pub const Runner = struct {
             return if (self.slowest) |*s| &s.runner else &self.with_leak_detection.runner;
         }
 
-        pub fn slowestPtr(self: *@This()) ?*SlowestTests {
+        pub fn slowestPtr(self: *@This()) ?*SlowestQueue {
             return if (self.slowest) |*s| &s.slowest else null;
         }
     };
@@ -313,7 +317,7 @@ pub const Runner = struct {
         runner: Runner = .{ .runTestAtFn = @This().runTestAt },
         timer: std.time.Timer,
 
-        pub fn init() @This() {
+        pub fn new() @This() {
             return .{ .timer = std.time.Timer.start() catch |err| @panic(@errorName(err)) };
         }
 
@@ -351,8 +355,8 @@ pub const Runner = struct {
         runner: Runner = .{ .runTestAtFn = runWithLeakTestAt },
         base: Base,
 
-        pub fn init() @This() {
-            return .{ .base = Base.init() };
+        pub fn new() @This() {
+            return .{ .base = Base.new() };
         }
 
         pub fn runWithLeakTestAt(r: *Runner, idx: usize, testFn: TestFn) Result {
@@ -376,10 +380,10 @@ pub const Runner = struct {
     pub const Slowest = struct {
         runner: Runner = .{ .runTestAtFn = runSlowestTestAt },
         inner: *Runner,
-        slowest: SlowestTests,
+        slowest: SlowestQueue,
 
         pub fn init(alloc: Allocator, max: usize, inner: *Runner) !@This() {
-            return .{ .slowest = try SlowestTests.init(alloc, max), .inner = inner };
+            return .{ .slowest = try SlowestQueue.init(alloc, max), .inner = inner };
         }
 
         pub fn deinit(self: *@This()) void {
@@ -408,7 +412,7 @@ pub const Runner = struct {
         runner: Runner = .{ .runTestAtFn = runWithCaptureAt },
         inner: *Runner,
 
-        pub fn init(inner: *Runner) @This() {
+        pub fn new(inner: *Runner) @This() {
             return .{
                 .buffer = undefined,
                 .read_fd = undefined,
@@ -463,14 +467,22 @@ pub const Runner = struct {
 // Output
 // --------------------------
 pub const Output = struct {
-    pub const Format = enum {
-        console,
-        json,
+    pub const Instance = union(enum) {
+        console: Console,
+        json: Json,
 
-        pub fn fromString(s: []const u8) Format {
-            if (std.mem.eql(u8, s, "json")) return .json;
+        pub fn new(cfg: *const Config, slowest: ?*SlowestQueue) @This() {
+            switch (cfg.format) {
+                .console => return .{ .console = Console.new(cfg.file, slowest) },
+                .json => return .{ .json = Json.new(cfg.file, slowest, cfg.shuffle) },
+            }
+        }
 
-            return .console;
+        pub fn output(self: *@This()) *Output {
+            switch (self.*) {
+                .console => |*c| return &c.output,
+                .json => |*j| return &j.output,
+            }
         }
     };
 
@@ -485,7 +497,7 @@ pub const Output = struct {
     leak: usize = 0,
     fail: usize = 0,
 
-    slowest: ?*SlowestTests = null,
+    slowest: ?*SlowestQueue = null,
 
     onBeginFn: *const fn (*Output) anyerror!void,
     onResultFn: *const fn (*Output, usize, *Runner.Result) anyerror!void,
@@ -528,7 +540,7 @@ pub const Output = struct {
         output: Output,
         tty_config: std.Io.tty.Config,
 
-        pub fn init(file: std.fs.File, slowest: ?*SlowestTests) @This() {
+        pub fn new(file: std.fs.File, slowest: ?*SlowestQueue) @This() {
             return .{
                 .output = .{
                     .onBeginFn = @This().onBegin,
@@ -634,9 +646,9 @@ pub const Output = struct {
         const stringify = std.json.Stringify;
 
         output: Output,
-        cfg: *const Config,
+        shuffle: ?u64,
 
-        pub fn init(file: std.fs.File, cfg: *const Config, slowest: ?*SlowestTests) @This() {
+        pub fn new(file: std.fs.File, slowest: ?*SlowestQueue, shuffle: ?u64) @This() {
             return .{
                 .output = .{
                     .onBeginFn = @This().onBegin,
@@ -645,7 +657,7 @@ pub const Output = struct {
                     .writer = file.writer(&Output.buffer),
                     .slowest = slowest,
                 },
-                .cfg = cfg,
+                .shuffle = shuffle,
             };
         }
 
@@ -656,7 +668,7 @@ pub const Output = struct {
             try stringify.value(Begin{
                 .tests = out.tests_len,
                 .slowest = @min(if (out.slowest) |s| s.max else 0, out.tests_len),
-                .shuffle_seed = self.cfg.shuffle,
+                .shuffle_seed = self.shuffle,
             }, .{}, w);
             try w.print("\n", .{});
             try w.flush();
@@ -725,9 +737,9 @@ pub const Output = struct {
 };
 
 //
-// Slowest
+// Slowest Queue
 //
-pub const SlowestTests = struct {
+pub const SlowestQueue = struct {
     const Durations = struct {
         idx: usize = 0,
         duration_ns: u64,

@@ -34,6 +34,7 @@ jobs:
         run: zig build test -- --shuffle --filter pass --slowest 1 --stderr
       - name: run test_runner JSON shuffle, filter and slowest
         run: zig build test -- --slowest 3 --filter pass --output json --shuffle --shuffle 2
-      # - name: run test_runner with ENV-var JSON shuffle, filter and slowest
-      #   run: TESTIT_ARGS="--slowest 1 --filter pass --shuffle 2" zig build test -- --output json 
-
+      - name: run test_runner with ENV-var JSON shuffle, filter and slowest
+        env:
+          TESTIT_ARGS: "--slowest 1 --filter pass --shuffle 2"
+        run: zig build test -- --output json
