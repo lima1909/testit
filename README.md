@@ -65,11 +65,13 @@ By both, the command line arguments overwrite the environment variable values.
 # environment and commandline arguments
 ❯ TESTIT_ARGS="--slowest 1 --filter my-filter --shuffle" zig build test -- --output json
 ```
+### Arg definitions
 
-| Arg                            | Description                                 | 
-|--------------------------------|---------------------------------------------|
-| `--slowest [usize]`            | show the [value] slowest tests              |
-| `--filter [string]`            | run all tests, which contains the [string]  |
-| `--shuffle [u64]`              | shuffle tests, which optional seed [u64]    |
-| `--output [console or json]`   | output format, default is `console`         |
-| `--stderr`                     | output to `stderr`, default is `stdout`     |
+| Long                           | Short                  | Description                                 | 
+|--------------------------------|------------------------|---------------------------------------------|
+| `--slowest [usize]`            | `-l [usize]`           | show the [value] slowest tests              |
+| `--filter [string]`            | `-f [string]`          | run all tests, which contains the [string]  |
+| `--shuffle [u64]`              | `-s [u64]`             | shuffle tests, which optional seed [u64]    |
+| `--output [console or json]`   | `-o [console or json]` | output format, default is `console`         |
+| `--verbose`                    | `-v`                   | shows more informations                     |
+| `--stderr`                     |                        | output to `stderr`, default is `stdout`     |

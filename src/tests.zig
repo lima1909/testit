@@ -13,6 +13,10 @@ test "config from args" {
         var args = std.mem.tokenizeScalar(u8, "--filter pass", ' ');
         try Config.Cli.parse(&cfg, &args);
         try std.testing.expectEqualStrings("pass", cfg.filter.?);
+
+        args = std.mem.tokenizeScalar(u8, "-f skip", ' ');
+        try Config.Cli.parse(&cfg, &args);
+        try std.testing.expectEqualStrings("skip", cfg.filter.?);
     }
 
     {
@@ -33,9 +37,27 @@ test "config from args" {
 
     {
         var cfg = Config.default();
+        try std.testing.expect(!cfg.verbose);
+
+        var args = std.mem.tokenizeScalar(u8, "--verbose ", ' ');
+        try Config.Cli.parse(&cfg, &args);
+        try std.testing.expect(cfg.verbose);
+
+        cfg.verbose = false;
+        args = std.mem.tokenizeScalar(u8, "-v", ' ');
+        try Config.Cli.parse(&cfg, &args);
+        try std.testing.expect(cfg.verbose);
+    }
+
+    {
+        var cfg = Config.default();
         var args = std.mem.tokenizeScalar(u8, "--slowest 2", ' ');
         try Config.Cli.parse(&cfg, &args);
         try std.testing.expectEqual(2, cfg.slowest);
+
+        args = std.mem.tokenizeScalar(u8, "-l 5", ' ');
+        try Config.Cli.parse(&cfg, &args);
+        try std.testing.expectEqual(5, cfg.slowest);
     }
 
     {
@@ -43,6 +65,10 @@ test "config from args" {
         var args = std.mem.tokenizeScalar(u8, "--shuffle", ' ');
         try Config.Cli.parse(&cfg, &args);
         try std.testing.expectEqual(0, cfg.shuffle);
+
+        args = std.mem.tokenizeScalar(u8, "-s 2", ' ');
+        try Config.Cli.parse(&cfg, &args);
+        try std.testing.expectEqual(2, cfg.shuffle);
     }
 
     {
@@ -50,6 +76,10 @@ test "config from args" {
         var args = std.mem.tokenizeScalar(u8, "--output", ' ');
         try Config.Cli.parse(&cfg, &args);
         try std.testing.expectEqual(.console, cfg.format);
+
+        args = std.mem.tokenizeScalar(u8, "-o json", ' ');
+        try Config.Cli.parse(&cfg, &args);
+        try std.testing.expectEqual(.json, cfg.format);
     }
 
     {

@@ -55,6 +55,7 @@ pub const Config = struct {
     ) void = defaultShuffle,
 
     slowest: usize = 0,
+    verbose: bool = false,
 
     // Output.Writer write to stdout or stderr
     format: Format = .console,
@@ -104,10 +105,11 @@ pub const Config = struct {
         }
 
         pub fn parse(c: *Config, iter: anytype) !void {
+            const eql = std.mem.eql;
             while (iter.next()) |a| {
                 const inner = struct {
                     fn inner(cfg: *Config, args: anytype, arg: []const u8) !void {
-                        if (std.mem.eql(u8, "--filter", arg)) {
+                        if (eql(u8, "--filter", arg) or eql(u8, "-f", arg)) {
                             if (args.next()) |filter| {
                                 cfg.filter = std.mem.trim(u8, filter, "'");
                                 // there was no trim, try it with "
@@ -117,7 +119,7 @@ pub const Config = struct {
                             } else {
                                 return error.MissingFilterString;
                             }
-                        } else if (std.mem.eql(u8, "--shuffle", arg)) {
+                        } else if (eql(u8, "--shuffle", arg) or eql(u8, "-s", arg)) {
                             cfg.shuffle = 0; // with shuffle
                             if (args.next()) |seed| {
                                 // no number means, default shuffle
@@ -127,15 +129,17 @@ pub const Config = struct {
                                     try inner(cfg, args, seed);
                                 }
                             }
-                        } else if (std.mem.eql(u8, "--stderr", arg)) {
+                        } else if (eql(u8, "--verbose", arg) or eql(u8, "-v", arg)) {
+                            cfg.verbose = true;
+                        } else if (eql(u8, "--stderr", arg)) {
                             cfg.file = std.fs.File.stderr();
-                        } else if (std.mem.eql(u8, "--slowest", arg)) {
+                        } else if (eql(u8, "--slowest", arg) or eql(u8, "-l", arg)) {
                             if (args.next()) |slowest| {
                                 cfg.slowest = std.fmt.parseUnsigned(usize, slowest, 0) catch return error.InvalidSlowestValue;
                             } else {
                                 return error.MissingSlowestValue;
                             }
-                        } else if (std.mem.eql(u8, "--output", arg)) {
+                        } else if (eql(u8, "--output", arg) or eql(u8, "-o", arg)) {
                             if (args.next()) |out| {
                                 cfg.format = Format.fromString(out);
                             }
@@ -477,8 +481,8 @@ pub const Output = struct {
 
         pub fn new(cfg: *const Config, slowest: ?*SlowestQueue) @This() {
             switch (cfg.format) {
-                .console => return .{ .console = Console.new(cfg.file, slowest) },
-                .json => return .{ .json = Json.new(cfg.file, slowest, cfg.shuffle) },
+                .console => return .{ .console = Console.new(cfg, slowest) },
+                .json => return .{ .json = Json.new(cfg, slowest) },
             }
         }
 
@@ -502,6 +506,7 @@ pub const Output = struct {
     fail: usize = 0,
     total_duration_ns: usize = 0,
 
+    verbose: bool = false,
     slowest: ?*SlowestQueue = null,
 
     onBeginFn: *const fn (*Output) anyerror!void,
@@ -547,28 +552,40 @@ pub const Output = struct {
         output: Output,
         tty_config: std.Io.tty.Config,
 
-        pub fn new(file: std.fs.File, slowest: ?*SlowestQueue) @This() {
+        pub fn new(cfg: *const Config, slowest: ?*SlowestQueue) @This() {
             return .{
                 .output = .{
                     .onBeginFn = @This().onBegin,
                     .onResultFn = @This().onResult,
                     .onEndFn = @This().onEnd,
-                    .writer = file.writer(&Output.buffer),
+                    .writer = cfg.file.writer(&Output.buffer),
                     .slowest = slowest,
+                    .verbose = cfg.verbose,
                 },
-                .tty_config = std.Io.tty.detectConfig(file),
+                .tty_config = std.Io.tty.detectConfig(cfg.file),
             };
         }
 
         pub fn onBegin(_: *Output) anyerror!void {}
 
         pub fn onResult(out: *Output, idx: usize, r: *Runner.Result) anyerror!void {
+            var w = &out.writer.interface;
+
             switch (r.state) {
-                .pass => out.pass += 1,
-                .leak => |_| out.leak += 1,
+                .pass => {
+                    out.pass += 1;
+                    if (out.verbose) {
+                        try w.print("{d}/{d} {s}...PASS\n", .{
+                            idx + 1, out.tests_len, out.tests[idx].name,
+                        });
+                        try w.flush();
+                    }
+                },
+                .leak => {
+                    out.leak += 1;
+                },
                 .skip => {
                     out.skip += 1;
-                    var w = &out.writer.interface;
                     try w.print("{d}/{d} {s}...SKIP\n", .{
                         idx + 1, out.tests_len, out.tests[idx].name,
                     });
@@ -576,7 +593,6 @@ pub const Output = struct {
                 },
                 .fail => |*e| {
                     out.fail += 1;
-                    var w = &out.writer.interface;
                     try w.print("{d}/{d} {s}...FAIL ({t})\n", .{
                         idx + 1, out.tests_len, out.tests[idx].name, e.err,
                     });
@@ -638,7 +654,11 @@ pub const Output = struct {
             skip: usize,
             fail: usize,
             leak: usize,
-            total_duration_ns: usize,
+            total: struct {
+                tests: usize,
+                duration_ns: usize,
+                // duration: []const u8,
+            },
         };
 
         const Result = struct {
@@ -663,16 +683,17 @@ pub const Output = struct {
         output: Output,
         shuffle: ?u64,
 
-        pub fn new(file: std.fs.File, slowest: ?*SlowestQueue, shuffle: ?u64) @This() {
+        pub fn new(cfg: *const Config, slowest: ?*SlowestQueue) @This() {
             return .{
                 .output = .{
                     .onBeginFn = @This().onBegin,
                     .onResultFn = @This().onResult,
                     .onEndFn = @This().onEnd,
-                    .writer = file.writer(&Output.buffer),
+                    .writer = cfg.file.writer(&Output.buffer),
                     .slowest = slowest,
+                    .verbose = cfg.verbose,
                 },
-                .shuffle = shuffle,
+                .shuffle = cfg.shuffle,
             };
         }
 
@@ -692,10 +713,7 @@ pub const Output = struct {
         pub fn onResult(out: *Output, idx: usize, r: *Runner.Result) anyerror!void {
             var w = &out.writer.interface;
 
-            defer {
-                w.print("\n", .{}) catch |e| @panic(@errorName(e));
-                w.flush() catch |e| @panic(@errorName(e));
-            }
+            defer {}
 
             var json_result = Result{
                 .@"test" = out.tests[idx].name,
@@ -705,9 +723,23 @@ pub const Output = struct {
             };
 
             switch (r.state) {
-                .pass => out.pass += 1,
-                .leak => out.leak += 1,
-                .skip => out.skip += 1,
+                .pass => {
+                    out.pass += 1;
+                    if (out.verbose) {
+                        try stringify.value(json_result, .{}, w);
+                        try w.print("\n", .{});
+                        try w.flush();
+                    }
+                },
+                .leak => {
+                    out.leak += 1;
+                },
+                .skip => {
+                    out.skip += 1;
+                    try stringify.value(json_result, .{}, w);
+                    try w.print("\n", .{});
+                    try w.flush();
+                },
                 .fail => |*e| {
                     out.fail += 1;
                     if (e.error_stack_trace) |trace| {
@@ -718,12 +750,11 @@ pub const Output = struct {
                             .stack_trace = try std.fmt.bufPrint(&err_buf, "{f}", .{trace}),
                         };
                         try stringify.value(json_result, .{}, w);
-                        return;
+                        try w.print("\n", .{});
+                        try w.flush();
                     }
                 },
             }
-
-            try stringify.value(json_result, .{}, w);
         }
 
         pub fn onEnd(out: *Output) anyerror!void {
@@ -745,7 +776,10 @@ pub const Output = struct {
                 .skip = out.skip,
                 .fail = out.fail,
                 .leak = out.leak,
-                .total_duration_ns = out.total_duration_ns,
+                .total = .{
+                    .tests = out.tests_len,
+                    .duration_ns = out.total_duration_ns,
+                },
             }, .{}, w);
             try w.flush();
         }
