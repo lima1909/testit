@@ -275,12 +275,16 @@ pub const Runner = struct {
     pub fn runTests(runner: *Runner, tests: []const std.builtin.TestFn, out: *Output) void {
         out.onBegin(tests) catch |e| @panic(@errorName(e));
 
+        var total_duration_ns: usize = 0;
+
         for (tests, 0..) |t, idx| {
             var result = runner.runTestAt(idx, t.func);
+            total_duration_ns += result.duration_ns;
+
             out.onResult(idx, &result) catch |err| @panic(@errorName(err));
         }
 
-        out.onEnd() catch |e| @panic(@errorName(e));
+        out.onEnd(total_duration_ns) catch |e| @panic(@errorName(e));
     }
 
     //
@@ -496,6 +500,7 @@ pub const Output = struct {
     skip: usize = 0,
     leak: usize = 0,
     fail: usize = 0,
+    total_duration_ns: usize = 0,
 
     slowest: ?*SlowestQueue = null,
 
@@ -514,7 +519,9 @@ pub const Output = struct {
         return self.onResultFn(self, idx, r);
     }
 
-    pub fn onEnd(self: *Output) anyerror!void {
+    pub fn onEnd(self: *Output, total_duration_ns: usize) anyerror!void {
+        self.total_duration_ns = total_duration_ns;
+
         return self.onEndFn(self);
     }
 
@@ -596,9 +603,16 @@ pub const Output = struct {
             }
 
             if (out.pass == out.tests_len) {
-                try w.print("All {d} tests passed.\n", .{out.pass});
+                try w.print("All {d} tests passed; ", .{out.pass});
+                try Output.prettyDuration(out.total_duration_ns, w);
+                try w.print("\n", .{});
             } else {
-                try w.print("{d} passed; {d} skipped; {d} failed.\n", .{ out.pass, out.skip, out.fail });
+                try w.print(
+                    "{d} passed; {d} skipped; {d} failed; ",
+                    .{ out.pass, out.skip, out.fail },
+                );
+                try Output.prettyDuration(out.total_duration_ns, w);
+                try w.print("\n", .{});
             }
 
             if (out.leak != 0) {
@@ -615,7 +629,7 @@ pub const Output = struct {
     pub const Json = struct {
         const Begin = struct {
             tests: usize,
-            slowest: usize,
+            slowests: usize,
             shuffle_seed: ?u64 = null,
         };
 
@@ -624,6 +638,7 @@ pub const Output = struct {
             skip: usize,
             fail: usize,
             leak: usize,
+            total_duration_ns: usize,
         };
 
         const Result = struct {
@@ -667,7 +682,7 @@ pub const Output = struct {
 
             try stringify.value(Begin{
                 .tests = out.tests_len,
-                .slowest = @min(if (out.slowest) |s| s.max else 0, out.tests_len),
+                .slowests = @min(if (out.slowest) |s| s.max else 0, out.tests_len),
                 .shuffle_seed = self.shuffle,
             }, .{}, w);
             try w.print("\n", .{});
@@ -730,6 +745,7 @@ pub const Output = struct {
                 .skip = out.skip,
                 .fail = out.fail,
                 .leak = out.leak,
+                .total_duration_ns = out.total_duration_ns,
             }, .{}, w);
             try w.flush();
         }
