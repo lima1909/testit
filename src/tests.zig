@@ -7,6 +7,11 @@ const Output = tr.Output;
 const SlowestQueue = tr.SlowestQueue;
 const Config = tr.Config;
 
+test {
+    // include private tests
+    _ = @import("./test_runner.zig");
+}
+
 test "config from args" {
     {
         var cfg = Config.default();

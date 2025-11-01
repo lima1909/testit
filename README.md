@@ -29,6 +29,26 @@
 
 ## Installation
 
+### Simple integration as CLI argument
+
+Clone the TestIt git repository:
+
+```bash
+git clone --depth 1 https://github.com/lima1909/testit.git
+```
+
+Run the tests with the `test-runner` option:
+
+```bash
+zig test src/[my-test.file].zig --test-runner [path-to-testit]src/test_runner.zig
+
+# or with arguments (in linux or macos)
+TESTIT_ARGS="--filter my-filter" zig test src/[my-test.file].zig --test-runner [path-to-testit]src/test_runner.zig
+
+```
+
+### Permanent integration in your project 
+
 Clone the TestIt git repository:
 
 ```bash
@@ -67,11 +87,14 @@ By both, the command line arguments overwrite the environment variable values.
 ```
 ### Arg definitions
 
-| Long                           | Short                  | Description                                 | 
-|--------------------------------|------------------------|---------------------------------------------|
-| `--slowest [usize]`            | `-l [usize]`           | show the [value] slowest tests              |
-| `--filter [string]`            | `-f [string]`          | run all tests, which contains the [string]  |
-| `--shuffle [u64]`              | `-s [u64]`             | shuffle tests, which optional seed [u64]    |
-| `--output [console or json]`   | `-o [console or json]` | output format, default is `console`         |
-| `--verbose`                    | `-v`                   | shows more informations                     |
-| `--stderr`                     |                        | output to `stderr`, default is `stdout`     |
+| Long                  | Short                  | Description                                        | 
+|-----------------------|------------------------|----------------------------------------------------|
+| `--filter  [string]`  | `-f [string]`          | run all tests, which matched the `[string]`        |
+| `--slowest [usize]`   | `-l [usize]`           | show the `[value]` slowest tests                   |
+| `--output  [format]`  | `-o [format]`          | output format, default is `console`                |
+| `--shuffle [u64]`     | `-s [u64]`             | shuffle tests, which optional seed `[u64]`         |
+| `--verbose`           | `-v`                   | shows more informations (e.g. show `passed` tests) |
+| `--stderr`            |                        | output to `stderr`, default is `stdout`            |
+
+- `filter`: supported wild cards like `*` for any chars and `?` for one char, if the filter does not contain a wild card, then is the filter is equivalent to `contains`
+- `output` formats are: `console` and `json`

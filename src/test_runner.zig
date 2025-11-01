@@ -197,10 +197,59 @@ pub const Config = struct {
     };
 
     // create a list of tests for a given filter
-    fn defaultFilter(alloc: Allocator, mtests: *MTests, ctests: []const TestFn, filter: []const u8) !void {
+    pub fn defaultFilter(alloc: Allocator, mtests: *MTests, ctests: []const TestFn, filter: []const u8) !void {
+        const filterFn: *const fn ([]const u8, []const u8) bool = if (isWildcard(filter))
+            wildcardFilter
+        else
+            containsFilter;
+
         for (ctests) |t| {
-            if (std.mem.containsAtLeast(u8, t.name, 1, filter)) {
+            if (filterFn(t.name, filter)) {
                 try mtests.append(alloc, t);
+            }
+        }
+    }
+
+    inline fn isWildcard(filter: []const u8) bool {
+        return (std.mem.indexOf(u8, filter, "*") != null or
+            std.mem.indexOf(u8, filter, "?") != null);
+    }
+
+    fn containsFilter(input: []const u8, pattern: []const u8) bool {
+        return std.mem.containsAtLeast(u8, input, 1, pattern);
+    }
+
+    fn wildcardFilter(input: []const u8, pattern: []const u8) bool {
+        const plen = pattern.len;
+        const ilen = input.len;
+
+        var p: usize = 0;
+        var i: usize = 0;
+
+        while (true) {
+            if (p == plen and i == ilen)
+                return true;
+            if (p == plen or (i == ilen and pattern[p] != '*'))
+                return false;
+
+            switch (pattern[p]) {
+                '*' => {
+                    while (i <= ilen) : (i += 1) {
+                        if (wildcardFilter(input[i..], pattern[p + 1 ..]))
+                            return true;
+                    }
+                    return false;
+                },
+                '?' => {
+                    if (i == ilen) return false;
+                    p += 1;
+                    i += 1;
+                },
+                else => {
+                    if (i == ilen or pattern[p] != input[i]) return false;
+                    p += 1;
+                    i += 1;
+                },
             }
         }
     }
@@ -500,14 +549,15 @@ pub const Output = struct {
     tests: []const std.builtin.TestFn = &.{},
     tests_len: usize = 0,
 
+    slowest: ?*SlowestQueue = null,
+    slowest_len: usize = 0,
+
     pass: usize = 0,
     skip: usize = 0,
     leak: usize = 0,
     fail: usize = 0,
     total_duration_ns: usize = 0,
-
     verbose: bool = false,
-    slowest: ?*SlowestQueue = null,
 
     onBeginFn: *const fn (*Output) anyerror!void,
     onResultFn: *const fn (*Output, usize, *Runner.Result) anyerror!void,
@@ -516,6 +566,7 @@ pub const Output = struct {
     pub fn onBegin(self: *Output, tests: []const std.builtin.TestFn) anyerror!void {
         self.tests = tests;
         self.tests_len = tests.len;
+        self.slowest_len = @min(if (self.slowest) |s| s.max else 0, self.tests_len);
 
         return self.onBeginFn(self);
     }
@@ -703,7 +754,7 @@ pub const Output = struct {
 
             try stringify.value(Begin{
                 .tests = out.tests_len,
-                .slowests = @min(if (out.slowest) |s| s.max else 0, out.tests_len),
+                .slowests = out.slowest_len,
                 .shuffle_seed = self.shuffle,
             }, .{}, w);
             try w.print("\n", .{});
@@ -833,3 +884,67 @@ pub const SlowestQueue = struct {
         }
     }
 };
+
+// --------------------------
+// private tests
+// --------------------------
+test "wildcard filter" {
+    const filter = Config.wildcardFilter;
+
+    // *
+    try std.testing.expect(filter("abc", "abc"));
+    try std.testing.expect(filter("abc", "*"));
+    try std.testing.expect(filter("", "*"));
+    try std.testing.expect(filter("?", "*"));
+    try std.testing.expect(filter(" ", "*"));
+    try std.testing.expect(filter("*", "*"));
+
+    try std.testing.expect(filter("abc", "a*"));
+    try std.testing.expect(filter("a", "a*"));
+
+    try std.testing.expect(filter("abc", "*c"));
+    try std.testing.expect(filter("a", "*a"));
+    try std.testing.expect(filter("abc", "a*c"));
+
+    // ?
+    try std.testing.expect(filter("?", "?"));
+    try std.testing.expect(filter(" ", "?"));
+    try std.testing.expect(filter("*", "?"));
+
+    try std.testing.expect(filter("abc", "a?c"));
+    try std.testing.expect(filter("abc", "?bc"));
+    try std.testing.expect(filter("abc", "ab?"));
+
+    // ? and *
+    try std.testing.expect(filter("abbc", "*b?"));
+    try std.testing.expect(filter("abbcxy", "*bc?y"));
+    try std.testing.expect(filter("a", "*?"));
+    try std.testing.expect(filter("a", "?*"));
+    try std.testing.expect(filter("a", "**"));
+
+    // NOT
+    try std.testing.expect(!filter("", "?"));
+    try std.testing.expect(!filter("", "?*?"));
+    try std.testing.expect(!filter("a", "?*?"));
+    try std.testing.expect(!filter("a", "??"));
+    try std.testing.expect(!filter("abb", "*bb?"));
+}
+
+test "is wildcard" {
+    const isWildcard = Config.isWildcard;
+
+    try std.testing.expect(isWildcard("a*b"));
+    try std.testing.expect(isWildcard("a?b"));
+
+    try std.testing.expect(isWildcard("*ab"));
+    try std.testing.expect(isWildcard("?ab"));
+
+    try std.testing.expect(isWildcard("ab*"));
+    try std.testing.expect(isWildcard("ab?"));
+
+    try std.testing.expect(isWildcard("*?ab"));
+    try std.testing.expect(isWildcard("?*ab"));
+
+    // no wildcard
+    try std.testing.expect(!isWildcard("ab"));
+}
