@@ -13,23 +13,28 @@
 
 
 <div>
-<strong>TestIt is in a very early stage of development and can change!</strong>
+⚠️ <strong>TestIt is in a very early stage of development and can change!</strong>
 </div>
 
 
 ## Features
 
 - Filters tests (run only tests, which you want)
+  - contains filter (default)
+  - wildcard filter (if the filter string contains `*` or `?`
 - Shuffles tests (reproducible, by setting a shuffle seed)
 - Show slowest tests 
 - Show duration of every test
 - Memory leak detection
-- Multiple output formats: console, JSON (well suited for further processing, like CI or IDE )
-- configure the test-runner per command-line-args and/or environment variables
+- Multiple output formats: 
+  - console 
+  - JSONL (JSON Lines) is a sequence of independent JSON objects, one per line (well suited for further processing, like CI or IDE )
+- configure the test-runner per: 
+  - command-line-args and/or 
+  - environment variables
+- the test-runner is **one** file, so you can easily use it with the zig cli option `--test-runner [path-to-testit]src/test_runner.zig`
 
-## Installation
-
-### Simple integration as CLI argument
+## Simple usage
 
 Clone the TestIt git repository:
 
@@ -47,7 +52,7 @@ TESTIT_ARGS="--filter my-filter" zig test src/[my-test.file].zig --test-runner [
 
 ```
 
-### Permanent integration in your project 
+## Usage with integration in your project 
 
 Clone the TestIt git repository:
 
@@ -70,7 +75,7 @@ const tests = b.addTest(.{
 
 ## Command Line 
 
-ARGS for the command line usage.
+Args for the command line usage.
 
 You can set args by command line argument or by environment variable or both.
 By both, the command line arguments overwrite the environment variable values.
@@ -85,16 +90,17 @@ By both, the command line arguments overwrite the environment variable values.
 # environment and commandline arguments
 ❯ TESTIT_ARGS="--slowest 1 --filter my-filter --shuffle" zig build test -- --output json
 ```
-### Arg definitions
+### Args definitions
 
-| Long                  | Short                  | Description                                        | 
-|-----------------------|------------------------|----------------------------------------------------|
-| `--filter  [string]`  | `-f [string]`          | run all tests, which matched the `[string]`        |
-| `--slowest [usize]`   | `-l [usize]`           | show the `[value]` slowest tests                   |
-| `--output  [format]`  | `-o [format]`          | output format, default is `console`                |
-| `--shuffle [u64]`     | `-s [u64]`             | shuffle tests, which optional seed `[u64]`         |
-| `--verbose`           | `-v`                   | shows more informations (e.g. show `passed` tests) |
-| `--stderr`            |                        | output to `stderr`, default is `stdout`            |
+| Long                  | Short                  | Description                                             | 
+|-----------------------|------------------------|---------------------------------------------------------|
+| `--filter  [string]`  | `-f [string]`          | run all tests, which matched the `[string]`             |
+| `--slowest [usize]`   | `-l [usize]`           | show the `[value]` slowest tests, default is `disabled` |
+| `--output  [format]`  | `-o [format]`          | output format, default is `console`                     |
+| `--shuffle [u64]`     | `-s [u64]`             | shuffle tests, which optional seed `[u64]`              |
+| `--verbose`           | `-v`                   | shows more informations (e.g. show `passed` tests)      |
+| `--stderr`            |                        | output to `stderr`, default is `stdout`                 |
 
-- `filter`: supported wild cards like `*` for any chars and `?` for one char, if the filter does not contain a wild card, then is the filter is equivalent to `contains`
+
+- `filter`: supported wild cards like `*` for any chars and `?` for one char, if the filter does not contain a wild card, then the filter is equivalent to `contains`
 - `output` formats are: `console` and `json`

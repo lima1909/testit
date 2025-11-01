@@ -197,7 +197,12 @@ pub const Config = struct {
     };
 
     // create a list of tests for a given filter
-    pub fn defaultFilter(alloc: Allocator, mtests: *MTests, ctests: []const TestFn, filter: []const u8) !void {
+    pub fn defaultFilter(
+        alloc: Allocator,
+        mtests: *MTests,
+        ctests: []const TestFn,
+        filter: []const u8,
+    ) !void {
         const filterFn: *const fn ([]const u8, []const u8) bool = if (isWildcard(filter))
             wildcardFilter
         else
