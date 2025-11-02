@@ -6,6 +6,7 @@ const Runner = tr.Runner;
 const Output = tr.Output;
 const SlowestQueue = tr.SlowestQueue;
 const Config = tr.Config;
+const TestFns = tr.TestFns;
 
 test {
     // include private tests
@@ -14,7 +15,7 @@ test {
 
 test "config from args" {
     {
-        var cfg = Config.default();
+        var cfg = Config{};
         var args = std.mem.tokenizeScalar(u8, "--filter pass", ' ');
         try Config.Cli.parse(&cfg, &args);
         try std.testing.expectEqualStrings("pass", cfg.filter.?);
@@ -25,14 +26,14 @@ test "config from args" {
     }
 
     {
-        var cfg = Config.default();
+        var cfg = Config{};
         var args = std.mem.tokenizeScalar(u8, "--filter 'pa'ss'", ' ');
         try Config.Cli.parse(&cfg, &args);
         try std.testing.expectEqualStrings("pa'ss", cfg.filter.?);
     }
 
     {
-        var cfg = Config.default();
+        var cfg = Config{};
         var args = std.mem.tokenizeScalar(u8,
             \\--filter "pass"
         , ' ');
@@ -41,7 +42,7 @@ test "config from args" {
     }
 
     {
-        var cfg = Config.default();
+        var cfg = Config{};
         try std.testing.expect(!cfg.verbose);
 
         var args = std.mem.tokenizeScalar(u8, "--verbose ", ' ');
@@ -55,7 +56,7 @@ test "config from args" {
     }
 
     {
-        var cfg = Config.default();
+        var cfg = Config{};
         var args = std.mem.tokenizeScalar(u8, "--slowest 2", ' ');
         try Config.Cli.parse(&cfg, &args);
         try std.testing.expectEqual(2, cfg.slowest);
@@ -66,7 +67,7 @@ test "config from args" {
     }
 
     {
-        var cfg = Config.default();
+        var cfg = Config{};
         var args = std.mem.tokenizeScalar(u8, "--shuffle", ' ');
         try Config.Cli.parse(&cfg, &args);
         try std.testing.expectEqual(0, cfg.shuffle);
@@ -77,7 +78,7 @@ test "config from args" {
     }
 
     {
-        var cfg = Config.default();
+        var cfg = Config{};
         var args = std.mem.tokenizeScalar(u8, "--output", ' ');
         try Config.Cli.parse(&cfg, &args);
         try std.testing.expectEqual(.console, cfg.format);
@@ -88,28 +89,28 @@ test "config from args" {
     }
 
     {
-        var cfg = Config.default();
+        var cfg = Config{};
         var args = std.mem.tokenizeScalar(u8, "--output foo", ' ');
         try Config.Cli.parse(&cfg, &args);
         try std.testing.expectEqual(.console, cfg.format);
     }
 
     {
-        var cfg = Config.default();
+        var cfg = Config{};
         var args = std.mem.tokenizeScalar(u8, "--output json", ' ');
         try Config.Cli.parse(&cfg, &args);
         try std.testing.expectEqual(.json, cfg.format);
     }
 
     {
-        var cfg = Config.default();
+        var cfg = Config{};
         var args = std.mem.tokenizeScalar(u8, "--shuffle 42", ' ');
         try Config.Cli.parse(&cfg, &args);
         try std.testing.expectEqual(42, cfg.shuffle);
     }
 
     {
-        var cfg = Config.default();
+        var cfg = Config{};
         var args = std.mem.tokenizeScalar(u8, "--filter pass    --shuffle  --slowest 2", ' ');
         try Config.Cli.parse(&cfg, &args);
         try std.testing.expectEqualStrings("pass", cfg.filter.?);
@@ -120,28 +121,28 @@ test "config from args" {
 
 test "config from args with errors" {
     {
-        var cfg = Config.default();
+        var cfg = Config{};
         var args = std.mem.tokenizeScalar(u8, "--filter", ' ');
         const err = Config.Cli.parse(&cfg, &args);
         try std.testing.expectEqual(error.MissingFilterString, err);
     }
 
     {
-        var cfg = Config.default();
+        var cfg = Config{};
         var args = std.mem.tokenizeScalar(u8, "--slowest -a-number", ' ');
         const err = Config.Cli.parse(&cfg, &args);
         try std.testing.expectEqual(error.InvalidSlowestValue, err);
     }
 
     {
-        var cfg = Config.default();
+        var cfg = Config{};
         var args = std.mem.tokenizeScalar(u8, "--foo", ' ');
         const err = Config.Cli.parse(&cfg, &args);
         try std.testing.expectEqual(error.UnkownOption, err);
     }
 
     {
-        var cfg = Config.default();
+        var cfg = Config{};
         var args = std.mem.tokenizeScalar(u8, "--slowest --shuffle", ' ');
         const err = Config.Cli.parse(&cfg, &args);
         try std.testing.expectEqual(error.InvalidSlowestValue, err);
@@ -191,21 +192,6 @@ const TestingOutput = struct {
         self.errors.deinit(self.alloc);
     }
 };
-
-test "SlowestQueue" {
-    var slowest = try SlowestQueue.init(std.testing.allocator, 3);
-    defer slowest.deinit();
-
-    slowest.put(2, 123);
-    slowest.put(3, 12);
-    slowest.put(0, 922424);
-    slowest.put(1, 22424);
-
-    try std.testing.expectEqual(0, slowest.queue.removeMaxOrNull().?.idx);
-    try std.testing.expectEqual(1, slowest.queue.removeMaxOrNull().?.idx);
-    try std.testing.expectEqual(2, slowest.queue.removeMaxOrNull().?.idx);
-    try std.testing.expectEqual(null, slowest.queue.removeMaxOrNull());
-}
 
 test "Runner base pass" {
     const testFn = struct {
@@ -328,12 +314,11 @@ test "run all tests with filter" {
     var out = TestingOutput.init(std.testing.allocator);
     defer out.deinit();
 
-    var cfg: Config = .default();
-    cfg.filter = "test";
-    var ctests = try Config.Tests.processTests(std.testing.allocator, &tests, &cfg);
+    var cfg = Config{ .filter = "test" };
+    var ctests = try TestFns.init(std.testing.allocator, &tests, &cfg);
     defer ctests.deinit(std.testing.allocator);
 
-    runner.runTests(ctests.testFns(), &out.output);
+    runner.runTests(ctests.testFnsArray(), &out.output);
 
     try std.testing.expectEqual(4, out.output.tests.len);
     try std.testing.expectEqualStrings("test error 0", out.output.tests[0].name);
@@ -358,4 +343,135 @@ test "run all tests with filter" {
     //     .linux, .macos => try std.testing.expectEqualStrings("expected 5, found 7\x0a", err.msg),
     //     else => {}, // windows doesn't support capturing (github pipeline)
     // }
+}
+
+test "run all tests, check result output" {
+    var tests = [_]std.builtin.TestFn{
+        .{
+            .name = "test skip",
+            .func = struct {
+                fn func() !void {
+                    return error.SkipZigTest;
+                }
+            }.func,
+        },
+        .{
+            .name = "test pass 0",
+            .func = struct {
+                fn func() !void {}
+            }.func,
+        },
+        .{
+            .name = "test pass 1",
+            .func = struct {
+                fn func() !void {}
+            }.func,
+        },
+    };
+
+    var base = Runner.Base.new();
+    const runner = &base.runner;
+
+    {
+        var cfg = Config{};
+
+        var buffer: [1024]u8 = undefined;
+        var writer = std.Io.Writer.fixed(&buffer);
+        var out = Output.Instance.new(&writer, &cfg, null);
+        runner.runTests(&tests, out.output());
+
+        const should = writer.buffered();
+        std.testing.expect(std.mem.startsWith(u8, should,
+            \\1/3 test skip...SKIP
+            \\2 passed; 1 skipped; 0 failed; 
+        )) catch |err| {
+            std.debug.print("{s}\n", .{should});
+            return err;
+        };
+    }
+
+    {
+        var cfg = Config{ .verbose = true };
+
+        var buffer: [1024]u8 = undefined;
+        var writer = std.Io.Writer.fixed(&buffer);
+        var out = Output.Instance.new(&writer, &cfg, null);
+
+        runner.runTests(&tests, out.output());
+
+        const should = writer.buffered();
+        std.testing.expect(std.mem.startsWith(u8, should,
+            \\1/3 test skip...SKIP
+            \\2/3 test pass 0...PASS
+            \\3/3 test pass 1...PASS
+            \\2 passed; 1 skipped; 0 failed; 
+        )) catch |err| {
+            std.debug.print("{s}\n", .{should});
+            return err;
+        };
+    }
+
+    {
+        var cfg = Config{ .verbose = true, .shuffle = 42 };
+
+        var buffer: [1024]u8 = undefined;
+        var writer = std.Io.Writer.fixed(&buffer);
+        var out = Output.Instance.new(&writer, &cfg, null);
+
+        var mtests = try TestFns.init(std.testing.allocator, &tests, &cfg);
+        defer mtests.deinit(std.testing.allocator);
+
+        runner.runTests(mtests.testFnsArray(), out.output());
+
+        const should = writer.buffered();
+        std.testing.expect(std.mem.startsWith(u8, should,
+            \\1/3 test pass 1...PASS
+            \\2/3 test pass 0...PASS
+            \\3/3 test skip...SKIP
+            \\2 passed; 1 skipped; 0 failed;
+        )) catch |err| {
+            std.debug.print("{s}\n", .{should});
+            return err;
+        };
+    }
+
+    {
+        var cfg = Config{ .verbose = true, .filter = "*1*" };
+
+        var buffer: [1024]u8 = undefined;
+        var writer = std.Io.Writer.fixed(&buffer);
+        var out = Output.Instance.new(&writer, &cfg, null);
+
+        var mtests = try TestFns.init(std.testing.allocator, &tests, &cfg);
+        defer mtests.deinit(std.testing.allocator);
+
+        runner.runTests(mtests.testFnsArray(), out.output());
+
+        const should = writer.buffered();
+        std.testing.expect(std.mem.startsWith(u8, should,
+            \\1/1 test pass 1...PASS
+            \\All 1 tests passed;
+        )) catch |err| {
+            std.debug.print("{s}\n", .{should});
+            return err;
+        };
+    }
+
+    {
+        var cfg = Config{ .format = .json, .shuffle = 3 };
+
+        var buffer: [1024]u8 = undefined;
+        var writer = std.Io.Writer.fixed(&buffer);
+        var out = Output.Instance.new(&writer, &cfg, null);
+
+        runner.runTests(&tests, out.output());
+
+        const should = writer.buffered();
+        std.testing.expect(std.mem.startsWith(u8, should,
+            \\{"tests":3,"slowests":0,"shuffle_seed":3}
+        )) catch |err| {
+            std.debug.print("{s}\n", .{should});
+            return err;
+        };
+    }
 }

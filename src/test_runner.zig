@@ -11,59 +11,41 @@ pub fn main() !void {
     const alloc = gpa.allocator();
 
     // configure with Environment variable TESTIT_ARGS and/or CLI args
-    var cfg: Config = .default();
+    var cfg = Config{};
     var tests = try Config.Cli.init(alloc, &cfg, @import("builtin").test_functions);
     defer tests.deinit(alloc);
 
-    // Runner
+    // RUNNER
     var runner = Runner.Default{ .with_leak_detection = .new() };
     try runner.withSlowest(alloc, cfg.slowest);
     defer runner.deinit();
 
-    // Output and run all tests
-    var out = Output.Instance.new(&cfg, runner.slowestPtr());
-    runner.runner().runTests(tests.testFns(), out.output());
+    // OUTPUT with writer
+    var buffer: [1024]u8 = undefined;
+    var writer = cfg.writer.create(&buffer);
+    var out = Output.Instance.new(&writer.interface, &cfg, runner.slowestPtr());
+
+    // RUN all tests
+    runner.runner().runTests(tests.testFnsArray(), out.output());
 }
 
 //
 // Config
 //
 pub const Config = struct {
-    const TestFn = std.builtin.TestFn;
-    const MTests = std.array_list.Aligned(TestFn, null);
+    pub const Writer = enum {
+        stdout,
+        stderr,
+        file,
 
-    // TestFn.name contains the filter string
-    // --test-filter [text]           Skip tests that do not match any filter
-    filter: ?[]const u8 = null,
-    // the filter function
-    filterFn: *const fn (
-        alloc: Allocator,
-        mtests: *MTests,
-        ctests: []const TestFn,
-        filter: []const u8,
-    ) anyerror!void = defaultFilter,
-
-    // shuffle the tests with the given seed:
-    // - null -> no shuffle
-    // - 0 -> default shuffle: std.time.milliTimestamp
-    // - else -> the value is the seed
-    shuffle: ?u64 = null,
-    // the shuffle function
-    shuffleFn: *const fn (
-        tests: []TestFn,
-        seed: u64,
-    ) void = defaultShuffle,
-
-    slowest: usize = 0,
-    verbose: bool = false,
-
-    // Output.Writer write to stdout or stderr
-    format: Format = .console,
-    file: std.fs.File,
-
-    pub fn default() @This() {
-        return .{ .file = std.fs.File.stdout() };
-    }
+        pub fn create(self: @This(), buffer: []u8) std.fs.File.Writer {
+            return switch (self) {
+                .stderr => std.fs.File.stderr().writer(buffer),
+                .stdout => std.fs.File.stdout().writer(buffer),
+                else => @panic("Not implemented yet"),
+            };
+        }
+    };
 
     pub const Format = enum {
         console,
@@ -77,10 +59,36 @@ pub const Config = struct {
         }
     };
 
+    writer: Writer = .stdout,
+    format: Format = .console,
+    verbose: bool = false,
+
+    slowest: usize = 0,
+
+    filter: ?[]const u8 = null,
+    // the filter function
+    filterFn: *const fn (
+        alloc: Allocator,
+        mtests: *TestFns.TestFnsMut,
+        ctests: []const std.builtin.TestFn,
+        filter: []const u8,
+    ) anyerror!void = TestFns.defaultFilter,
+
+    // shuffle the tests with the given seed:
+    // - null -> no shuffle
+    // - 0 -> default shuffle: std.time.milliTimestamp
+    // - else -> the value is the seed
+    shuffle: ?u64 = null,
+    // the shuffle function
+    shuffleFn: *const fn (
+        tests: []std.builtin.TestFn,
+        seed: u64,
+    ) void = TestFns.defaultShuffle,
+
     pub const Cli = struct {
 
         // create Config based of an process ENV and.Args
-        pub fn init(alloc: Allocator, cfg: *Config, ctests: []const TestFn) !Tests {
+        pub fn init(alloc: Allocator, cfg: *Config, ctests: []const std.builtin.TestFn) !TestFns {
             var deinit_env: ?[]const u8 = null;
 
             // --- ENV args ---
@@ -101,7 +109,7 @@ pub const Config = struct {
             try parse(cfg, &args);
 
             // processed the tests, means optional filtering and/or shuffling
-            return Tests.processTests(alloc, ctests, cfg);
+            return TestFns.init(alloc, ctests, cfg);
         }
 
         pub fn parse(c: *Config, iter: anytype) !void {
@@ -132,7 +140,7 @@ pub const Config = struct {
                         } else if (eql(u8, "--verbose", arg) or eql(u8, "-v", arg)) {
                             cfg.verbose = true;
                         } else if (eql(u8, "--stderr", arg)) {
-                            cfg.file = std.fs.File.stderr();
+                            cfg.writer = .stderr;
                         } else if (eql(u8, "--slowest", arg) or eql(u8, "-l", arg)) {
                             if (args.next()) |slowest| {
                                 cfg.slowest = std.fmt.parseUnsigned(usize, slowest, 0) catch return error.InvalidSlowestValue;
@@ -157,50 +165,56 @@ pub const Config = struct {
             }
         }
     };
+};
 
-    pub const Tests = union(enum) {
-        static: []const TestFn, // the original tests
-        dyn: MTests, // needs mutability for filtering and shuffling
+// ---------------------------------------------------------------------------
+// Wrapper for std.builtin.TestFn (static)
+// if you want to filter or shuffle the TestFn you need a mutable list (dyn)
+// ---------------------------------------------------------------------------
+pub const TestFns = union(enum) {
+    const TestFnsMut = std.array_list.Aligned(std.builtin.TestFn, null);
 
-        pub fn deinit(self: *@This(), alloc: Allocator) void {
-            if (self.* == .dyn) self.dyn.deinit(alloc);
+    static: []const std.builtin.TestFn, // the original tests
+    dyn: TestFnsMut, // needs mutability for filtering and shuffling
+
+    // processed the tests, means optional filtering and/or shuffling
+    pub fn init(alloc: Allocator, ctests: []const std.builtin.TestFn, cfg: *Config) !@This() {
+        var tests: ?TestFns = null;
+
+        if (cfg.filter) |filter| {
+            tests = .{ .dyn = try .initCapacity(alloc, ctests.len) };
+            try cfg.filterFn(alloc, &tests.?.dyn, ctests, filter);
         }
 
-        pub fn testFns(self: @This()) []const TestFn {
-            switch (self) {
-                .static => |s| return s,
-                .dyn => |d| return d.items,
+        if (cfg.shuffle) |seed| {
+            if (tests == null) {
+                tests = .{ .dyn = .{} };
+                try tests.?.dyn.appendSlice(alloc, ctests);
             }
+
+            cfg.shuffle = if (seed != 0) seed else @intCast(std.time.milliTimestamp());
+            cfg.shuffleFn(tests.?.dyn.items, cfg.shuffle.?);
         }
 
-        // processed the tests, means optional filtering and/or shuffling
-        pub fn processTests(alloc: Allocator, ctests: []const TestFn, cfg: *Config) !@This() {
-            var tests: ?Tests = null;
+        return tests orelse .{ .static = ctests };
+    }
 
-            if (cfg.filter) |filter| {
-                tests = .{ .dyn = try .initCapacity(alloc, ctests.len) };
-                try cfg.filterFn(alloc, &tests.?.dyn, ctests, filter);
-            }
+    pub fn deinit(self: *@This(), alloc: Allocator) void {
+        if (self.* == .dyn) self.dyn.deinit(alloc);
+    }
 
-            if (cfg.shuffle) |seed| {
-                if (tests == null) {
-                    tests = .{ .dyn = .{} };
-                    try tests.?.dyn.appendSlice(alloc, ctests);
-                }
-
-                cfg.shuffle = if (seed != 0) seed else @intCast(std.time.milliTimestamp());
-                cfg.shuffleFn(tests.?.dyn.items, cfg.shuffle.?);
-            }
-
-            return if (tests) |t| t else .{ .static = ctests };
+    pub fn testFnsArray(self: @This()) []const std.builtin.TestFn {
+        switch (self) {
+            .static => |s| return s,
+            .dyn => |d| return d.items,
         }
-    };
+    }
 
     // create a list of tests for a given filter
     pub fn defaultFilter(
         alloc: Allocator,
-        mtests: *MTests,
-        ctests: []const TestFn,
+        mtests: *TestFnsMut,
+        ctests: []const std.builtin.TestFn,
         filter: []const u8,
     ) !void {
         const filterFn: *const fn ([]const u8, []const u8) bool = if (isWildcard(filter))
@@ -209,9 +223,7 @@ pub const Config = struct {
             containsFilter;
 
         for (ctests) |t| {
-            if (filterFn(t.name, filter)) {
-                try mtests.append(alloc, t);
-            }
+            if (filterFn(t.name, filter)) try mtests.append(alloc, t);
         }
     }
 
@@ -259,11 +271,11 @@ pub const Config = struct {
         }
     }
 
-    fn defaultShuffle(tests: []TestFn, seed: u64) void {
+    fn defaultShuffle(tests: []std.builtin.TestFn, seed: u64) void {
         var prng = std.Random.DefaultPrng.init(seed);
         const rng = prng.random();
 
-        rng.shuffle(TestFn, tests);
+        rng.shuffle(std.builtin.TestFn, tests);
     }
 };
 
@@ -533,10 +545,10 @@ pub const Output = struct {
         console: Console,
         json: Json,
 
-        pub fn new(cfg: *const Config, slowest: ?*SlowestQueue) @This() {
+        pub fn new(w: *std.Io.Writer, cfg: *const Config, slowest: ?*SlowestQueue) @This() {
             switch (cfg.format) {
-                .console => return .{ .console = Console.new(cfg, slowest) },
-                .json => return .{ .json = Json.new(cfg, slowest) },
+                .console => return .{ .console = Console.new(w, cfg, slowest) },
+                .json => return .{ .json = Json.new(w, cfg, slowest) },
             }
         }
 
@@ -548,8 +560,8 @@ pub const Output = struct {
         }
     };
 
-    var buffer: [1024]u8 = undefined;
-    writer: std.fs.File.Writer,
+    writer: *std.Io.Writer,
+    verbose: bool = false,
 
     tests: []const std.builtin.TestFn = &.{},
     tests_len: usize = 0,
@@ -562,7 +574,6 @@ pub const Output = struct {
     leak: usize = 0,
     fail: usize = 0,
     total_duration_ns: usize = 0,
-    verbose: bool = false,
 
     onBeginFn: *const fn (*Output) anyerror!void,
     onResultFn: *const fn (*Output, usize, *Runner.Result) anyerror!void,
@@ -608,24 +619,24 @@ pub const Output = struct {
         output: Output,
         tty_config: std.Io.tty.Config,
 
-        pub fn new(cfg: *const Config, slowest: ?*SlowestQueue) @This() {
+        pub fn new(writer: *std.Io.Writer, cfg: *const Config, slowest: ?*SlowestQueue) @This() {
             return .{
                 .output = .{
                     .onBeginFn = @This().onBegin,
                     .onResultFn = @This().onResult,
                     .onEndFn = @This().onEnd,
-                    .writer = cfg.file.writer(&Output.buffer),
+                    .writer = writer,
                     .slowest = slowest,
                     .verbose = cfg.verbose,
                 },
-                .tty_config = std.Io.tty.detectConfig(cfg.file),
+                .tty_config = .no_color, // TODO: std.Io.tty.detectConfig(cfg.file),
             };
         }
 
         pub fn onBegin(_: *Output) anyerror!void {}
 
         pub fn onResult(out: *Output, idx: usize, r: *Runner.Result) anyerror!void {
-            var w = &out.writer.interface;
+            var w = out.writer;
 
             switch (r.state) {
                 .pass => {
@@ -662,7 +673,7 @@ pub const Output = struct {
         }
 
         pub fn onEnd(out: *Output) anyerror!void {
-            var w = &out.writer.interface;
+            var w = out.writer;
 
             if (out.slowest) |slow| {
                 while (slow.queue.removeMaxOrNull()) |s| {
@@ -739,13 +750,13 @@ pub const Output = struct {
         output: Output,
         shuffle: ?u64,
 
-        pub fn new(cfg: *const Config, slowest: ?*SlowestQueue) @This() {
+        pub fn new(writer: *std.Io.Writer, cfg: *const Config, slowest: ?*SlowestQueue) @This() {
             return .{
                 .output = .{
                     .onBeginFn = @This().onBegin,
                     .onResultFn = @This().onResult,
                     .onEndFn = @This().onEnd,
-                    .writer = cfg.file.writer(&Output.buffer),
+                    .writer = writer,
                     .slowest = slowest,
                     .verbose = cfg.verbose,
                 },
@@ -755,7 +766,7 @@ pub const Output = struct {
 
         pub fn onBegin(out: *Output) anyerror!void {
             const self: *@This() = @fieldParentPtr("output", out);
-            var w = &out.writer.interface;
+            var w = out.writer;
 
             try stringify.value(Begin{
                 .tests = out.tests_len,
@@ -767,7 +778,7 @@ pub const Output = struct {
         }
 
         pub fn onResult(out: *Output, idx: usize, r: *Runner.Result) anyerror!void {
-            var w = &out.writer.interface;
+            var w = out.writer;
 
             defer {}
 
@@ -814,7 +825,7 @@ pub const Output = struct {
         }
 
         pub fn onEnd(out: *Output) anyerror!void {
-            var w = &out.writer.interface;
+            var w = out.writer;
 
             if (out.slowest) |slow| {
                 while (slow.queue.removeMaxOrNull()) |s| {
@@ -890,11 +901,26 @@ pub const SlowestQueue = struct {
     }
 };
 
+test "SlowestQueue" {
+    var slowest = try SlowestQueue.init(std.testing.allocator, 3);
+    defer slowest.deinit();
+
+    slowest.put(2, 123);
+    slowest.put(3, 12);
+    slowest.put(0, 922424);
+    slowest.put(1, 22424);
+
+    try std.testing.expectEqual(0, slowest.queue.removeMaxOrNull().?.idx);
+    try std.testing.expectEqual(1, slowest.queue.removeMaxOrNull().?.idx);
+    try std.testing.expectEqual(2, slowest.queue.removeMaxOrNull().?.idx);
+    try std.testing.expectEqual(null, slowest.queue.removeMaxOrNull());
+}
+
 // --------------------------
 // private tests
 // --------------------------
 test "wildcard filter" {
-    const filter = Config.wildcardFilter;
+    const filter = TestFns.wildcardFilter;
 
     // *
     try std.testing.expect(filter("abc", "abc"));
@@ -936,7 +962,7 @@ test "wildcard filter" {
 }
 
 test "is wildcard" {
-    const isWildcard = Config.isWildcard;
+    const isWildcard = TestFns.isWildcard;
 
     try std.testing.expect(isWildcard("a*b"));
     try std.testing.expect(isWildcard("a?b"));
